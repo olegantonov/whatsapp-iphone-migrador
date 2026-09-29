@@ -1,6 +1,6 @@
 # Migrador de WhatsApp para iPhone
 
-Programa gratuito e de código aberto para Windows que transfere o WhatsApp (com todas as conversas, fotos, vídeos e áudios) de um iPhone para outro **por cabo, usando o PC**. Não depende do backup do iCloud nem da transferência do próprio WhatsApp, que costumam falhar com históricos grandes (100 GB, 200 GB ou mais).
+Programa gratuito e de código aberto para Windows, desenvolvido pela **DAGUMASI Sistemas** e aberto à comunidade, que transfere o WhatsApp (com todas as conversas, fotos, vídeos e áudios) de um iPhone para outro **por cabo, usando o PC**. Não depende do backup do iCloud nem da transferência do próprio WhatsApp, que costumam falhar com históricos grandes (100 GB, 200 GB ou mais).
 
 ![Tela inicial](docs/telas/01-inicio.png)
 
@@ -17,9 +17,15 @@ Programa gratuito e de código aberto para Windows que transfere o WhatsApp (com
 - O iPhone antigo nunca é apagado nem modificado. A única mudança é ativar a senha de backup, que é um ajuste do sistema.
 - O iPhone novo só é tocado depois que o backup foi verificado e aprovado.
 - Antes de restaurar, o programa confere que o backup no disco está idêntico ao que foi verificado (impressão digital SHA-256), que o aparelho conectado não é o antigo e que o iOS e o espaço do novo comportam o backup.
-- Se algo cair no meio do backup (cabo, energia), nada se perde: o backup continua de onde parou.
-- O progresso fica salvo. É possível fechar o programa e retomar depois, inclusive após uma atualização.
+- O progresso fica salvo. É possível fechar o programa e retomar depois na mesma etapa, inclusive após uma atualização.
+- Todas as operações ficam registradas em arquivos de log, sem senhas.
 - O Windows não entra em suspensão durante backup e restauração.
+
+**Pausar e continuar, com precisão:**
+- **Primeira cópia do backup:** se for interrompida (cabo, energia ou botão **Parar**), ela **recomeça do zero** na próxima tentativa. É uma limitação do protocolo de backup da Apple, e o iTunes e o Finder também agem assim. Com um WhatsApp de 200 GB, isso custa horas: evite interromper.
+- **Depois que um backup termina,** as cópias seguintes só atualizam o que mudou e podem ser interrompidas e repetidas sem grande custo.
+- **Verificação:** pode ser interrompida e refeita quantas vezes quiser.
+- **Restauração:** não pode ser pausada. Se for interrompida, é refeita desde o começo; o backup no PC continua intacto.
 
 **Não dá para garantir 100%**, e nenhum programa garante, porque parte do processo depende da Apple e do WhatsApp. Por exemplo, o WhatsApp pode exigir a confirmação do número por SMS, e o iPhone baixa os apps da App Store depois da restauração. Por isso o iPhone antigo continua intacto como garantia até você conferir tudo no novo.
 
@@ -76,7 +82,7 @@ O iPhone novo precisa estar na **versão mais recente do iOS** disponível para 
 ![Senha](docs/telas/04-senha.png)
 
 ### 5. Backup do iPhone antigo
-Clique em **Iniciar backup**. A tela mostra a porcentagem, o tempo decorrido e o tempo restante. Não use nem desconecte o iPhone. Se a conexão cair, clique em **Tentar de novo** e o backup continua de onde parou.
+Clique em **Iniciar backup**. A tela mostra a porcentagem, o tempo decorrido e o tempo restante. Não use nem desconecte o iPhone e não deixe o PC desligar: se a **primeira** cópia for interrompida, ela recomeça do zero. Se já existir um backup completo, o botão vira **Atualizar backup** e só copia o que mudou.
 
 ### 6. Verificar o backup
 Acontece automaticamente. O programa mostra quantas conversas, mensagens e mídias do WhatsApp estão no backup. Se algo estiver errado, ele reprova e oferece refazer o backup.
@@ -120,9 +126,13 @@ Também dá para abrir direto no modo simulação: `MigradorWhatsApp.exe --simul
 | "iOS do iPhone novo" em vermelho | *Ajustes > Geral > Atualização de Software* no iPhone novo. |
 | "Buscar iPhone" em vermelho | No iPhone novo: *Ajustes > [seu nome] > Buscar > Buscar iPhone > desativar*. Ou apague-o e pare na tela de configuração. |
 | Falta espaço no PC | Escolha uma pasta em outro disco (NTFS), como um HD externo. |
-| Backup parou | Clique em **Tentar de novo**. Ele continua de onde parou. |
+| Backup parou | Na primeira cópia, clique em **Recomeçar o backup**; ela começa do zero. Se já havia um backup completo, clique em **Atualizar backup**, que só copia o que mudou. |
 
-Os registros ficam em `%LOCALAPPDATA%\MigradorWhatsApp\logs` (botão **Abrir registros** no programa). Senhas nunca são gravadas nos registros.
+Os registros ficam em `%LOCALAPPDATA%\MigradorWhatsApp\logs` (botão **Abrir registros** no programa): um arquivo por vez que o programa é aberto, mais `atualizacao.log` para as atualizações automáticas. Senhas nunca são gravadas nos registros. Ao final da migração, **Salvar relatório** gera um resumo em texto.
+
+## Privacidade
+
+O programa não envia conversas, fotos, contatos nem qualquer dado dos iPhones para lugar nenhum: o backup fica só no disco escolhido. Ele acessa a internet apenas para consultar no GitHub se há versão nova e para consultar na Apple a versão mais recente do iOS de cada modelo.
 
 ---
 
@@ -157,6 +167,20 @@ Estrutura:
 
 O GitHub Actions ([`publicar.yml`](.github/workflows/publicar.yml)) roda os testes, gera o executável, executa o autoteste com o `.exe` gerado e publica a release `v1.0.1` com o `.zip` e o `.sha256`. Todos os PCs com o programa instalado recebem a atualização. Um push sem mudança de versão só roda os testes.
 
+## Sobre o projeto
+
+Desenvolvido pela **DAGUMASI Sistemas**. É software livre e aberto à comunidade: use, estude, modifique e redistribua nos termos da licença. Relatos de problemas, sugestões e contribuições são bem-vindos. Veja [Como contribuir](CONTRIBUTING.md) ou [abra uma issue](https://github.com/olegantonov/whatsapp-iphone-migrador/issues/new/choose).
+
+No programa, o botão **Saiba mais: sobre e licenças** mostra estas informações, a licença completa e as licenças de todos os componentes de terceiros incluídos no executável.
+
+![Saiba mais](docs/telas/10-saiba-mais.png)
+
 ## Licença
 
-GPL-3.0-or-later, a mesma do pymobiledevice3, que o programa usa. WhatsApp, iPhone e iOS são marcas de seus respectivos donos. Este projeto não tem vínculo com a Meta nem com a Apple.
+Copyright © 2026 DAGUMASI Sistemas.
+
+Este programa é software livre: você pode redistribuí-lo e/ou modificá-lo sob os termos da [Licença Pública Geral GNU](LICENSE), versão 3 ou (a seu critério) qualquer versão posterior (**GPL-3.0-or-later**). A GPL é a mesma licença do pymobiledevice3 e do pyiosbackup, que o programa usa. Ele é distribuído na esperança de ser útil, mas **sem nenhuma garantia**, nem mesmo a garantia implícita de comercialização ou de adequação a um propósito específico.
+
+Componentes de terceiros mantêm suas próprias licenças (MIT, BSD, Apache-2.0, PSF, GPL). A lista completa, com os textos, é gerada no empacotamento e acompanha o executável (`TERCEIROS.txt`).
+
+WhatsApp é marca da Meta Platforms, Inc. iPhone, iOS, iTunes e iCloud são marcas da Apple Inc. Este projeto é independente e não tem vínculo com a Meta nem com a Apple.

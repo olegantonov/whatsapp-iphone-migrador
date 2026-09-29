@@ -124,3 +124,13 @@ def test_senha_guardada_protegida(tmp_path):
     bruto = estado.arquivo().read_text(encoding="utf-8")
     assert "MINHA-SENHA" not in bruto
     assert Migracao.retomar().senha == "MINHA-SENHA"
+
+
+def test_backup_anterior_completo_so_depois_de_terminar(tmp_path):
+    m = _ate_backup("queda_backup", tmp_path)
+    assert not m.backup_anterior_completo()
+    with pytest.raises(ErroAparelho):
+        m.fazer_backup(lambda p: None, threading.Event())
+    assert not m.backup_anterior_completo()
+    m.fazer_backup(lambda p: None, threading.Event())
+    assert m.backup_anterior_completo()

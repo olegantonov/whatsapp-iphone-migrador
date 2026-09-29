@@ -41,8 +41,7 @@ APPLE_DEVICES = (
     "Depois clique em \"Procurar iPhones\" de novo."
 )
 RECONECTAR = (
-    "Confira o cabo, desbloqueie o iPhone e clique em Tentar de novo. "
-    "O backup continua de onde parou."
+    "Confira o cabo, desbloqueie o iPhone e tente de novo."
 )
 
 

@@ -64,6 +64,20 @@ def conferir_antes_de_restaurar(pasta: Path, relatorio: RelatorioBackup) -> list
     return problemas
 
 
+def backup_completo_existe(pasta: Path | None) -> bool:
+    """Existe um backup que terminou? Só a partir dele uma nova cópia é incremental; uma
+    primeira cópia interrompida recomeça do zero (limitação do protocolo da Apple)."""
+    if not pasta:
+        return False
+    try:
+        if (pasta / "Manifest.plist").stat().st_size == 0 or not (pasta / "Manifest.db").is_file():
+            return False
+        status = plistlib.loads((pasta / "Status.plist").read_bytes())
+        return status.get("SnapshotState") == "finished"
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return False
+
+
 def ler_manifesto(pasta: Path) -> dict:
     return plistlib.loads((pasta / "Manifest.plist").read_bytes())
 

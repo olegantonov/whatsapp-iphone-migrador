@@ -110,8 +110,7 @@ class BackendSimulado:
             if self.cenario == "queda_backup" and self._quedas == 0 and i == passos * 45 // 100:
                 self._quedas += 1
                 raise ErroAparelho("A conexão com o iPhone caiu.",
-                                   "Confira o cabo, desbloqueie o iPhone e clique em Tentar de novo. "
-                                   "O backup continua de onde parou.")
+                                   "Confira o cabo, desbloqueie o iPhone e tente de novo.")
             progresso(i * 100 / passos)
             self._espera(0.2)
         gerar_backup_falso(pasta / udid, ios="26.6")

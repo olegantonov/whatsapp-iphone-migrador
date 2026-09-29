@@ -10,7 +10,9 @@ from migrador import checagens, disco, estado as est, versoes_ios
 from migrador.dispositivos import criar
 from migrador.dispositivos.base import Backend, ErroAparelho
 from migrador.modelos import Aparelho, Checagem, InfoWhatsApp, RelatorioBackup, Status, tem_bloqueio
-from migrador.verificacao import SenhaIncorreta, conferir_antes_de_restaurar, verificar_backup
+from migrador.verificacao import (
+    SenhaIncorreta, backup_completo_existe, conferir_antes_de_restaurar, verificar_backup,
+)
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +112,9 @@ class Migracao:
         self.salvar()
 
     # --- backup -----------------------------------------------------------------------
+
+    def backup_anterior_completo(self) -> bool:
+        return backup_completo_existe(self.estado.pasta_aparelho)
 
     def fazer_backup(self, progresso: Callable[[float], None], cancelar: threading.Event) -> None:
         e = self.estado

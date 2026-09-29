@@ -86,3 +86,14 @@ def test_metadado_ausente_reprova(tmp_path):
     (pasta / "Manifest.db").unlink()
     rel = verificar_backup(pasta)
     assert not rel.ok
+
+
+def test_backup_completo_existe(tmp_path):
+    from migrador.verificacao import backup_completo_existe
+    assert not backup_completo_existe(None)
+    assert not backup_completo_existe(tmp_path / "nada")
+    pasta = _backup(tmp_path)
+    assert backup_completo_existe(pasta)
+    # primeira cópia interrompida: o pymobiledevice3 deixa o Manifest.plist vazio
+    (pasta / "Manifest.plist").write_bytes(b"")
+    assert not backup_completo_existe(pasta)

@@ -30,6 +30,18 @@ def foto(nome):
     return f
 
 
+def foto_janela(nome):
+    def f():
+        j = app.janela_sobre
+        j.attributes("-topmost", True)
+        j.lift()
+        j.update()
+        x, y = j.winfo_rootx(), j.winfo_rooty()
+        ImageGrab.grab(bbox=(x, y, x + j.winfo_width(), y + j.winfo_height()), all_screens=True).save(
+            saida / f"{nome}.png")
+    return f
+
+
 def seq(*acoes):
     t = 800
     for a, espera in acoes:
@@ -71,6 +83,8 @@ seq(
     (foto("07-destino"), 500),
     (lambda: app.mostrar("concluido"), 1000),
     (foto("09-concluido"), 500),
+    (lambda: app._saiba_mais(), 1500),
+    (foto_janela("10-saiba-mais"), 500),
     (app.destroy, 500),
 )
 # fecha as caixas de mensagem automaticamente

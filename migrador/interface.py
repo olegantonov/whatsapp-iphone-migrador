@@ -13,7 +13,9 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from migrador import atualizador, checagens, disco, energia, registro
-from migrador.config import APP_NOME, REPOSITORIO, recurso
+from migrador.config import (
+    APP_NOME, EMPRESA, REPOSITORIO, URL_CONTRIBUIR, URL_PROBLEMAS, URL_REPOSITORIO, documento_legal, recurso,
+)
 from migrador.dispositivos.base import Cancelado, ErroAparelho
 from migrador.dispositivos.simulado import CENARIOS
 from migrador.estado import CHAVES_ETAPAS, ETAPAS
@@ -104,7 +106,12 @@ class App(ctk.CTk):
             self.botoes_etapas[chave] = b
         rodape = ctk.CTkFrame(lat, fg_color="transparent")
         rodape.pack(side="bottom", fill="x", padx=16, pady=14)
-        ctk.CTkLabel(rodape, text=f"Versão {__version__}", text_color=CINZA,
+        ctk.CTkButton(rodape, text="ℹ  Saiba mais: sobre e licenças", height=30, fg_color="transparent",
+                      border_width=1, border_color=VERDE, text_color=VERDE, hover_color=CARTAO,
+                      command=self._saiba_mais).pack(anchor="w", fill="x", pady=(0, 8))
+        ctk.CTkLabel(rodape, text=f"Versão {__version__} · {EMPRESA}", text_color=CINZA,
+                     font=ctk.CTkFont(size=12)).pack(anchor="w")
+        ctk.CTkLabel(rodape, text="Software livre (GPL-3.0)", text_color=CINZA,
                      font=ctk.CTkFont(size=12)).pack(anchor="w")
         ctk.CTkButton(rodape, text="Abrir registros (logs)", height=26, fg_color="transparent",
                       text_color=AZUL, hover_color=CARTAO, anchor="w",
@@ -376,7 +383,7 @@ class App(ctk.CTk):
             self._texto(c, f"Parou na etapa \"{nome}\" ({modo}). Nada do que já foi feito se perdeu.")
             linha = ctk.CTkFrame(c, fg_color="transparent")
             linha.pack(anchor="w", padx=18, pady=(6, 14))
-            ctk.CTkButton(linha, text="Retomar de onde parou", command=lambda: self.mostrar(m.estado.etapa)).pack(
+            ctk.CTkButton(linha, text="Retomar na etapa em que parou", command=lambda: self.mostrar(m.estado.etapa)).pack(
                 side="left")
             ctk.CTkButton(linha, text="Começar do zero", fg_color="transparent", border_width=1,
                           text_color=("gray20", "gray85"), command=self._confirmar_recomecar).pack(side="left", padx=10)
@@ -395,7 +402,10 @@ class App(ctk.CTk):
         self._texto(c, "• Com um WhatsApp de ~200 GB, cada etapa de cópia (backup e restauração) leva de 2 a 5 "
                        "horas. Reserve um período em que o PC e os iPhones possam ficar parados e na tomada.")
         self._texto(c, "• O PC precisa de espaço livre do tamanho do conteúdo do iPhone antigo, mais uma folga.")
-        self._texto(c, "• O iPhone novo será apagado e ficará com o conteúdo do antigo.", pady=(2, 14))
+        self._texto(c, "• O iPhone novo será apagado e ficará com o conteúdo do antigo.", pady=(2, 4))
+        ctk.CTkButton(c, text=f"Software livre desenvolvido pela {EMPRESA} · Saiba mais", anchor="w",
+                      fg_color="transparent", text_color=AZUL, hover_color=CARTAO, height=26,
+                      command=self._saiba_mais).pack(anchor="w", padx=10, pady=(0, 10))
 
         c = self._cartao("Modo de uso")
         modo_inicial = "Simulação (treino, sem iPhones)" if (
@@ -675,11 +685,19 @@ class App(ctk.CTk):
         tamanho = (e.whatsapp or {}).get("tamanho")
         origem = Aparelho.de_dict(e.origem) if e.origem else None
         estimado = max(x for x in (tamanho or 0, (origem.usado if origem else 0) or 0))
+        anterior = self.migracao.backup_anterior_completo()
+        if anterior:
+            sobre_interromper = ("Já existe um backup completo nesta pasta: uma nova cópia só atualiza o que mudou. "
+                                 "Se ela for interrompida, basta atualizar de novo.")
+        else:
+            sobre_interromper = ("Não use o iPhone antigo, não desconecte o cabo e não deixe o PC desligar. Se esta "
+                                 "primeira cópia for interrompida (cabo, energia ou botão Parar), ela RECOMEÇA DO "
+                                 "ZERO na próxima tentativa. É uma limitação do backup da Apple, e o iTunes faz o "
+                                 "mesmo. Depois que uma cópia termina, as seguintes só atualizam o que mudou.")
         c = self._cartao("Durante o backup")
         self._numerada(c, [
             "Mantenha o iPhone antigo conectado pelo cabo e na tomada. Pode deixar a tela apagar.",
-            "Não use o iPhone antigo nem desconecte o cabo. Se desconectar, nada se perde: clique em "
-            "Tentar de novo e o backup continua de onde parou.",
+            sobre_interromper,
             "Se o iPhone pedir o código de desbloqueio, digite-o.",
             f"Tamanho estimado: {formatar_bytes(estimado)}. Tempo típico: "
             f"{formatar_duracao(estimado / (35 * 1024**2))} a {formatar_duracao(estimado / (15 * 1024**2))}.",
@@ -689,10 +707,10 @@ class App(ctk.CTk):
         self.painel = self._painel_progresso(c, "Pronto para começar.")
         linha = ctk.CTkFrame(c, fg_color="transparent")
         linha.pack(anchor="w", padx=18, pady=(0, 14))
-        texto = "Fazer o backup de novo (atualiza)" if e.backup_concluido_em else "▶  Iniciar backup"
+        texto = "↻  Atualizar backup (copia só o que mudou)" if anterior else "▶  Iniciar backup"
         self.btn_backup = ctk.CTkButton(linha, text=texto, width=240, height=40, command=self._iniciar_backup)
         self.btn_backup.pack(side="left")
-        self.btn_cancelar = ctk.CTkButton(linha, text="Pausar / cancelar", width=160, fg_color="transparent",
+        self.btn_cancelar = ctk.CTkButton(linha, text="Parar backup", width=160, fg_color="transparent",
                                           border_width=1, text_color=VERMELHO, state="disabled",
                                           command=self._cancelar_backup)
         self.btn_cancelar.pack(side="left", padx=10)
@@ -718,8 +736,14 @@ class App(ctk.CTk):
         self.btn_cancelar.configure(state="normal")
 
     def _cancelar_backup(self):
-        if messagebox.askyesno("Pausar backup", "Interromper o backup agora? Depois é só clicar em Tentar de novo "
-                                                "que ele continua.", parent=self):
+        if self.migracao.backup_anterior_completo():
+            texto = ("Parar a atualização do backup agora?\n\nComo já existe um backup completo, na próxima "
+                     "tentativa ele copia só o que mudou.")
+        else:
+            texto = ("A primeira cópia ainda não terminou. Se parar agora, ela RECOMEÇA DO ZERO na próxima "
+                     "tentativa. Com um WhatsApp grande, isso significa horas de cópia de novo.\n\n"
+                     "Parar mesmo assim?")
+        if messagebox.askyesno("Parar backup", texto, icon="warning", parent=self):
             self.cancelar.set()
 
     def _backup_ok(self, _):
@@ -734,10 +758,14 @@ class App(ctk.CTk):
     def _backup_falhou(self, erro):
         self._alvo_progresso = None
         if self.tela_atual == "backup":
-            self.btn_backup.configure(state="normal", text="↻  Tentar de novo (continua de onde parou)")
+            anterior = self.migracao.backup_anterior_completo()
+            self.btn_backup.configure(state="normal", text="↻  Atualizar backup (copia só o que mudou)" if anterior
+                                      else "↻  Recomeçar o backup (do zero)")
             self.btn_cancelar.configure(state="disabled")
-            self.painel["msg"].configure(text="Backup interrompido." if isinstance(erro, Cancelado)
-                                         else "O backup parou antes de terminar.")
+            parou = "Backup interrompido." if isinstance(erro, Cancelado) else "O backup parou antes de terminar."
+            complemento = ("O backup completo anterior continua na pasta." if anterior
+                           else "Esta primeira cópia não terminou; a próxima tentativa começa do zero.")
+            self.painel["msg"].configure(text=f"{parou} {complemento}")
         if not isinstance(erro, Cancelado):
             self._mostrar_erro(erro)
 
@@ -997,6 +1025,104 @@ class App(ctk.CTk):
                        f"  Impressão digital: {rel.impressao_digital}"]
         linhas += ["", "Histórico:"] + [f"  {h}" for h in e.historico]
         Path(destino).write_text("\n".join(linhas), encoding="utf-8")
+
+    # ------------------------------------------------------------------ saiba mais
+
+    def _saiba_mais(self):
+        if getattr(self, "janela_sobre", None) and self.janela_sobre.winfo_exists():
+            self.janela_sobre.focus()
+            return
+        j = self.janela_sobre = ctk.CTkToplevel(self)
+        j.title("Saiba mais — sobre e licenças")
+        j.geometry("760x680")
+        j.transient(self)
+        corpo = ctk.CTkScrollableFrame(j, fg_color="transparent")
+        corpo.pack(fill="both", expand=True, padx=12, pady=12)
+
+        def secao(titulo):
+            c = ctk.CTkFrame(corpo, fg_color=CARTAO, corner_radius=12)
+            c.pack(fill="x", padx=6, pady=6)
+            ctk.CTkLabel(c, text=titulo, font=ctk.CTkFont(size=16, weight="bold"), anchor="w").pack(
+                anchor="w", padx=18, pady=(14, 4))
+            return c
+
+        def texto(pai, t, cor=None, pady=(2, 2)):
+            ctk.CTkLabel(pai, text=t, anchor="w", justify="left", wraplength=660, text_color=cor).pack(
+                anchor="w", padx=18, pady=pady)
+
+        def link(pai, rotulo, acao):
+            ctk.CTkButton(pai, text=rotulo, anchor="w", fg_color="transparent", text_color=AZUL, hover_color=CARTAO,
+                          height=26, command=acao).pack(anchor="w", padx=10)
+
+        topo = ctk.CTkFrame(corpo, fg_color="transparent")
+        topo.pack(fill="x", padx=6, pady=(4, 8))
+        ctk.CTkLabel(topo, text=APP_NOME, font=ctk.CTkFont(size=22, weight="bold"), text_color=VERDE,
+                     anchor="w").pack(anchor="w", padx=12)
+        ctk.CTkLabel(topo, text=f"Versão {__version__}  ·  © 2026 {EMPRESA}", text_color=CINZA,
+                     anchor="w").pack(anchor="w", padx=12)
+
+        c = secao("Desenvolvimento")
+        texto(c, f"Desenvolvido pela {EMPRESA}.")
+        texto(c, "É software livre e de código aberto, aberto à comunidade: qualquer pessoa pode usar de graça, "
+                 "estudar como funciona, sugerir melhorias, corrigir problemas e redistribuir, nos termos da licença "
+                 "GPL-3.0.", pady=(2, 6))
+        link(c, "→  Código-fonte no GitHub", lambda: webbrowser.open(URL_REPOSITORIO))
+        link(c, "→  Relatar um problema ou sugerir uma melhoria", lambda: webbrowser.open(URL_PROBLEMAS))
+        link(c, "→  Como contribuir com o projeto", lambda: webbrowser.open(URL_CONTRIBUIR))
+        ctk.CTkFrame(c, height=10, fg_color="transparent").pack()
+
+        c = secao("Licença")
+        texto(c, "Este programa é distribuído sob a Licença Pública Geral GNU (GPL), versão 3 ou qualquer versão "
+                 "posterior (GPL-3.0-or-later). Você pode redistribuí-lo e modificá-lo nesses termos. Quem distribuir "
+                 "uma versão modificada precisa manter a mesma licença e disponibilizar o código-fonte.")
+        texto(c, "O programa é oferecido SEM NENHUMA GARANTIA, nem mesmo a garantia implícita de "
+                 "COMERCIALIZAÇÃO ou de ADEQUAÇÃO A UM PROPÓSITO ESPECÍFICO. Consulte a licença para mais "
+                 "detalhes.", cor=CINZA, pady=(2, 6))
+        link(c, "→  Ler a licença completa (GPL-3.0)",
+             lambda: self._mostrar_documento("LICENCA.txt", "Licença GPL-3.0"))
+        ctk.CTkFrame(c, height=10, fg_color="transparent").pack()
+
+        c = secao("Componentes de terceiros")
+        texto(c, "O programa só existe graças a estes projetos de código aberto:")
+        for nome, lic, papel in [
+            ("pymobiledevice3", "GPL-3.0-or-later", "comunicação com o iPhone (backup e restauração)"),
+            ("pyiosbackup", "GPL-3.0-or-later", "leitura dos backups do iPhone"),
+            ("CustomTkinter", "MIT", "interface visual"),
+            ("cryptography", "Apache-2.0 / BSD-3-Clause", "criptografia do backup"),
+            ("Python e Tcl/Tk", "PSF / estilo BSD", "linguagem e base gráfica"),
+        ]:
+            texto(c, f"•  {nome} ({lic}): {papel}")
+        texto(c, "A lista completa, com versões e o texto de cada licença, acompanha o programa.", cor=CINZA,
+              pady=(6, 6))
+        link(c, "→  Ver todas as licenças de terceiros",
+             lambda: self._mostrar_documento("TERCEIROS.txt", "Licenças de terceiros"))
+        ctk.CTkFrame(c, height=10, fg_color="transparent").pack()
+
+        c = secao("Privacidade")
+        texto(c, "O programa não envia suas conversas, fotos, contatos ou qualquer dado dos iPhones para lugar "
+                 "nenhum: o backup fica só no disco que você escolher neste PC.")
+        texto(c, "Ele acessa a internet apenas para: (1) consultar no GitHub se há versão nova do programa e (2) "
+                 "consultar na Apple qual é a versão mais recente do iOS para cada modelo de iPhone.", pady=(2, 14))
+
+        c = secao("Marcas")
+        texto(c, "WhatsApp é marca da Meta Platforms, Inc. iPhone, iOS, iTunes e iCloud são marcas da Apple Inc. "
+                 "Este projeto é independente e não tem vínculo com a Meta nem com a Apple.", pady=(2, 14))
+
+    def _mostrar_documento(self, nome: str, titulo: str):
+        arquivo = documento_legal(nome)
+        if not arquivo:
+            if messagebox.askyesno(titulo, "Este arquivo acompanha a versão instalada do programa. Abrir a página "
+                                          "do projeto no GitHub?", parent=self.janela_sobre):
+                webbrowser.open(URL_REPOSITORIO)
+            return
+        j = ctk.CTkToplevel(self.janela_sobre)
+        j.title(titulo)
+        j.geometry("820x640")
+        j.transient(self.janela_sobre)
+        caixa = ctk.CTkTextbox(j, wrap="word", font=ctk.CTkFont(family="Consolas", size=12))
+        caixa.pack(fill="both", expand=True, padx=10, pady=10)
+        caixa.insert("1.0", arquivo.read_text(encoding="utf-8", errors="replace"))
+        caixa.configure(state="disabled")
 
     # ------------------------------------------------------------------ atualização
 

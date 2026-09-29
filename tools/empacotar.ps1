@@ -3,9 +3,18 @@ param([string]$Python = "python")
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
+# Documentos legais que vão dentro do executável e metadados do .exe (empresa, versão).
+New-Item -ItemType Directory assets\legal -Force | Out-Null
+Copy-Item LICENSE assets\legal\LICENCA.txt -Force
+& $Python tools\gerar_terceiros.py assets\legal\TERCEIROS.txt
+if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar a lista de licenças de terceiros" }
+& $Python tools\versao_windows.py build\versao_windows.txt
+if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o arquivo de versão" }
+
 & $Python -m PyInstaller --noconfirm --clean --windowed `
     --name MigradorWhatsApp `
     --icon assets\icone.ico `
+    --version-file build\versao_windows.txt `
     --add-data "assets;assets" `
     --collect-all customtkinter `
     --collect-all pymobiledevice3 `
