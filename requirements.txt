@@ -1,0 +1,4 @@
+pymobiledevice3==11.19.4
+pyiosbackup==0.2.4
+customtkinter==6.0.0
+packaging>=24
