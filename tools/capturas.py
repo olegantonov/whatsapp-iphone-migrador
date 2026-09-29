@@ -74,7 +74,6 @@ seq(
     (app.destroy, 500),
 )
 # fecha as caixas de mensagem automaticamente
-import tkinter.messagebox as mb  # noqa: E402
 import migrador.interface as itf  # noqa: E402
 itf.messagebox.showinfo = lambda *a, **k: None
 app.mainloop()

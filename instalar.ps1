@@ -18,7 +18,10 @@ New-Item -ItemType Directory $tmp | Out-Null
 $zip = Join-Path $tmp $pacote
 Write-Host "Baixando $($rel.tag_name)..." -ForegroundColor Cyan
 Invoke-WebRequest $zipUrl -OutFile $zip -UseBasicParsing
-$esperado = ((Invoke-WebRequest $shaUrl -UseBasicParsing).Content.ToString().Trim() -split '\s+')[0].ToLower()
+# O GitHub entrega o .sha256 como binário; baixar para arquivo e ler como texto.
+$shaArq = "$zip.sha256"
+Invoke-WebRequest $shaUrl -OutFile $shaArq -UseBasicParsing
+$esperado = ((Get-Content $shaArq -Raw).Trim() -split '\s+')[0].ToLower()
 $obtido = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 if ($esperado -ne $obtido) { throw "O arquivo baixado não confere com o publicado (SHA-256). Instalação cancelada." }
 
@@ -49,3 +52,5 @@ foreach ($pasta in @([Environment]::GetFolderPath('Desktop'), (Join-Path $env:AP
 Write-Host "Instalado em $destino ($($rel.tag_name))." -ForegroundColor Green
 Write-Host "Atalho criado na Área de Trabalho e no menu Iniciar. Abrindo..." -ForegroundColor Green
 Start-Process $exe
+
+$global:LASTEXITCODE = 0
