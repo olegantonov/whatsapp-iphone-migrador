@@ -113,12 +113,15 @@ SCRIPT = r"""
 param([int]$Pid_, [string]$Zip, [string]$Destino, [string]$Exe, [int]$Reabrir = 1)
 $ErrorActionPreference = 'Stop'
 $log = Join-Path $env:LOCALAPPDATA 'MigradorWhatsApp\logs\atualizacao.log'
-function Log($m) { Add-Content -Path $log -Value "$(Get-Date -Format s) $m" }
+function Log($m) { Add-Content -Path $log -Value "$(Get-Date -Format s) $m" -Encoding UTF8 }
 try {
   Log "aguardando o programa (PID $Pid_) fechar"
   try { Wait-Process -Id $Pid_ -Timeout 120 -ErrorAction SilentlyContinue } catch {}
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ("migrador-novo-" + [guid]::NewGuid())
-  Expand-Archive -Path $Zip -DestinationPath $tmp -Force
+  New-Item -ItemType Directory $tmp | Out-Null
+  # tar.exe (nativo desde o Windows 10 1803) é muito mais rápido que Expand-Archive.
+  tar.exe -xf $Zip -C $tmp
+  if ($LASTEXITCODE -ne 0) { Expand-Archive -Path $Zip -DestinationPath $tmp -Force }
   $origem = Get-ChildItem $tmp -Recurse -Filter 'MigradorWhatsApp.exe' | Select-Object -First 1
   if (-not $origem) { throw 'pacote sem MigradorWhatsApp.exe' }
   $origemDir = $origem.Directory.FullName
@@ -155,13 +158,17 @@ def aplicar_e_reiniciar(zip_path: Path, reabrir: bool = True) -> None:
     script.write_text(SCRIPT, encoding="utf-8-sig")
     destino = pasta_programa()
     exe = destino / NOME_EXECUTAVEL
-    flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
-    subprocess.Popen(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
-         "-Pid_", str(os.getpid()), "-Zip", str(zip_path), "-Destino", str(destino), "-Exe", str(exe),
-         "-Reabrir", "1" if reabrir else "0"],
-        creationflags=flags, close_fds=True,
-    )
+    comando = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+               "-Pid_", str(os.getpid()), "-Zip", str(zip_path), "-Destino", str(destino), "-Exe", str(exe),
+               "-Reabrir", "1" if reabrir else "0"]
+    # Sem DETACHED_PROCESS: com ela o PowerShell encerra sem executar o script.
+    # BREAKAWAY_FROM_JOB evita que o script morra junto com o programa quando este roda
+    # dentro de um "job" do Windows; se o job não permitir, tenta sem.
+    sem_janela = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(comando, creationflags=sem_janela | 0x01000000, close_fds=True)
+    except OSError:
+        subprocess.Popen(comando, creationflags=sem_janela, close_fds=True)
     log.info("atualização disparada; encerrando")
     os._exit(0)
 
