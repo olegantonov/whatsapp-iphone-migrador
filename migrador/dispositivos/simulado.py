@@ -31,11 +31,15 @@ CENARIOS = {
     "destino_desatualizado": "iPhone novo com iOS mais antigo que o velho",
     "sem_espaco_destino": "iPhone novo sem espaço para o backup",
     "sem_whatsapp": "iPhone antigo sem WhatsApp",
+    "dois_whatsapps": "WhatsApp e WhatsApp Business no iPhone antigo",
+    "so_business": "Só o WhatsApp Business no iPhone antigo",
     "buscar_ativo": "\"Buscar iPhone\" ligado no iPhone novo",
     "queda_backup": "Cabo desconecta no meio do backup",
     "backup_corrompido": "Backup sai incompleto (arquivo faltando)",
     "ja_criptografado": "iPhone antigo já tem senha de backup (senha: 1234)",
 }
+
+COMUM, BUSINESS = "net.whatsapp.WhatsApp", "net.whatsapp.WhatsAppSMB"
 
 ULTIMAS_VERSOES = {"iPhone13,2": "27.0.1", "iPhone17,1": "27.0.1"}
 
@@ -54,7 +58,6 @@ class BackendSimulado:
         self._quedas = 0
         self._restaurado = False
         self._consultas_destino = 0
-        self._dados = 0
 
     def ultimas_versoes(self) -> dict[str, str]:
         return dict(ULTIMAS_VERSOES)
@@ -87,10 +90,20 @@ class BackendSimulado:
             destino = Aparelho(udid=UDID_DESTINO, erro=PRECISA_CONFIAR)
         return [origem, destino]
 
-    def whatsapp(self, udid: str) -> InfoWhatsApp | None:
-        if udid != UDID_ORIGEM or self.cenario == "sem_whatsapp":
-            return None
-        return InfoWhatsApp(bundle="net.whatsapp.WhatsApp", tamanho=200 * GB)
+    def _bundles(self) -> list[str]:
+        if self.cenario == "sem_whatsapp":
+            return []
+        if self.cenario == "so_business":
+            return [BUSINESS]
+        if self.cenario == "dois_whatsapps":
+            return [COMUM, BUSINESS]
+        return [COMUM]
+
+    def whatsapps(self, udid: str) -> list[InfoWhatsApp]:
+        if udid != UDID_ORIGEM:
+            return []
+        tamanhos = {COMUM: 200 * GB, BUSINESS: 30 * GB}
+        return [InfoWhatsApp(bundle=b, tamanho=tamanhos[b]) for b in self._bundles()]
 
     def criptografia_ativa(self, udid: str) -> bool:
         return self._senha is not None
@@ -123,17 +136,18 @@ class BackendSimulado:
                                    "Confira o cabo, desbloqueie o iPhone e tente de novo.")
             progresso(i * 100 / passos)
             self._espera(0.2)
-        gerar_backup_falso(pasta / udid, ios="26.6", senha=self._senha)
+        gerar_backup_falso(pasta / udid, ios="26.6", senha=self._senha, bundles=self._bundles())
         if self.cenario == "backup_corrompido":
             _apagar_um_arquivo(pasta / udid)
 
-    def whatsapp_no_destino(self, udid: str) -> dict:
+    def whatsapps_no_destino(self, udid: str) -> dict[str, dict]:
         if not self._restaurado:
-            return {"estado": "ausente"}
+            return {}
         self._consultas_destino += 1
         if self._consultas_destino == 1:
-            return {"estado": "instalando", "bundle": "net.whatsapp.WhatsApp"}
-        return {"estado": "instalado", "bundle": "net.whatsapp.WhatsApp", "versao": "26.20.1", "dados": self._dados}
+            return {b: {"estado": "instalando"} for b in self._bundles()}
+        dados = {COMUM: 196 * GB, BUSINESS: 29 * GB}
+        return {b: {"estado": "instalado", "versao": "26.20.1", "dados": dados[b]} for b in self._bundles()}
 
     def ler_sistema(self):
         """No treino, mostra o PC de verdade; nos testes (modo rápido), um PC ideal e previsível."""
@@ -157,7 +171,6 @@ class BackendSimulado:
             progresso(i * 2)
             self._espera(0.2)
         self._restaurado = True
-        self._dados = 196 * GB  # como no iPhone antigo simulado (200 GB), menos caches que não vão no backup
 
 
 # ---------------------------------------------------------------------------
@@ -266,21 +279,28 @@ def gerar_backup_falso(
     mensagens: int = 480,
     midias: int = 40,
     senha: str | None = None,
+    bundles: list[str] | None = None,
 ) -> None:
-    """Backup no formato da Apple. Com `senha`, sai criptografado de verdade (como no iPhone)."""
+    """Backup no formato da Apple. Com `senha`, sai criptografado de verdade (como no iPhone).
+    `bundles` põe mais de um WhatsApp (comum e Business); sem ele vale `bundle`."""
+    if bundles is None:
+        bundles = [bundle] if bundle else []
     pasta.mkdir(parents=True, exist_ok=True)
     arquivos: list[tuple[str, str, bytes]] = [
         ("HomeDomain", "Library/Preferences/com.apple.springboard.plist", b"x" * 300),
         ("HomeDomain", "Library/SMS/sms.db", os.urandom(2048)),
         ("CameraRollDomain", "Media/DCIM/100APPLE/IMG_0001.HEIC", os.urandom(5000)),
     ]
-    if bundle:
+    for n, bundle in enumerate(bundles):
+        # O Business simulado é menor, para os números dos dois não se confundirem nos testes.
+        fator = 1 if n == 0 else 2
         grupo = f"AppDomainGroup-group.{bundle}.shared"
-        caminhos = [f"Message/Media/5511900000000@s.whatsapp.net/a/b/foto{i}.jpg" for i in range(midias)]
-        arquivos.append((grupo, "ChatStorage.sqlite", _banco_whatsapp(conversas, mensagens, caminhos)))
+        caminhos = [f"Message/Media/5511900000000@s.whatsapp.net/a/b/foto{i}.jpg" for i in range(midias // fator)]
+        arquivos.append((grupo, "ChatStorage.sqlite",
+                         _banco_whatsapp(conversas // fator, mensagens // fator, caminhos)))
         for i, relativo in enumerate(caminhos):
             arquivos.append((grupo, relativo, JPEG + os.urandom(1000 + i)))
-        arquivos.append((f"AppDomain-{bundle}", "Library/Preferences/net.whatsapp.WhatsApp.plist", b"p" * 120))
+        arquivos.append((f"AppDomain-{bundle}", f"Library/Preferences/{bundle}.plist", b"p" * 120))
 
     cifra = _Cifra(senha) if senha else None
     db_path = pasta / "Manifest.db"

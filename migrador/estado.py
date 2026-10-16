@@ -34,7 +34,10 @@ class Estado:
     cenario: str = "normal"
     origem: dict | None = None
     destino: dict | None = None
-    whatsapp: dict | None = None
+    whatsapp: dict | None = None  # até a 1.1.0: um só WhatsApp; mantido para retomar estados antigos
+    # WhatsApps encontrados no iPhone antigo ({bundle, tamanho}) e os escolhidos para migrar e conferir.
+    whatsapps: list[dict] = field(default_factory=list)
+    escolhidos: list[str] = field(default_factory=list)
     pasta_backup: str = ""
     criptografia_ja_ativa: bool = False
     senha_protegida: str | None = None
@@ -73,6 +76,20 @@ class Estado:
         except Exception:
             log.warning("senha guardada não pôde ser aberta nesta conta")
             return None
+
+    @property
+    def bundles_escolhidos(self) -> list[str]:
+        if self.escolhidos:
+            return list(self.escolhidos)
+        if self.whatsapp:  # estado salvo pela 1.1.0 ou anterior
+            return [self.whatsapp["bundle"]]
+        return []
+
+    def tamanho_whatsapp(self, bundle: str) -> int | None:
+        for w in self.whatsapps or ([self.whatsapp] if self.whatsapp else []):
+            if w.get("bundle") == bundle:
+                return w.get("tamanho")
+        return None
 
     @property
     def pasta_aparelho(self) -> Path | None:

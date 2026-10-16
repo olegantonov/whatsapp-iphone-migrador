@@ -146,10 +146,11 @@ class BackendReal:
                  udid, ap.tipo, ap.ios, ap.capacidade, ap.livre, ap.bateria, ap.buscar_ativo)
         return ap
 
-    def whatsapp(self, udid: str) -> InfoWhatsApp | None:
-        return _rodar(self._whatsapp(udid))
+    def whatsapps(self, udid: str) -> list[InfoWhatsApp]:
+        """Todos os WhatsApps instalados (comum e Business podem estar juntos)."""
+        return _rodar(self._whatsapps(udid))
 
-    async def _whatsapp(self, udid: str) -> InfoWhatsApp | None:
+    async def _whatsapps(self, udid: str) -> list[InfoWhatsApp]:
         ld = await _conectar(udid)
         try:
             apps = await InstallationProxyService(lockdown=ld).get_apps(
@@ -157,17 +158,18 @@ class BackendReal:
             )
         finally:
             await ld.close()
-        # Se houver os dois, o WhatsApp comum tem prioridade.
+        encontrados = []
         for bundle in WHATSAPP_BUNDLES:
             if bundle in apps:
                 info = apps[bundle]
                 tamanho = (info.get("StaticDiskUsage") or 0) + (info.get("DynamicDiskUsage") or 0)
-                return InfoWhatsApp(bundle=bundle, tamanho=tamanho or None)
-        return None
+                encontrados.append(InfoWhatsApp(bundle=bundle, tamanho=tamanho or None))
+        log.info("WhatsApps em %s: %s", udid, [(w.bundle, w.tamanho) for w in encontrados])
+        return encontrados
 
-    def whatsapp_no_destino(self, udid: str) -> dict:
-        """Depois da restauração o iPhone reinstala os apps pela App Store: enquanto baixa, o
-        WhatsApp aparece só como "placeholder" (ícone esperando)."""
+    def whatsapps_no_destino(self, udid: str) -> dict[str, dict]:
+        """Estado de cada WhatsApp no iPhone novo. Depois da restauração o iPhone reinstala os apps
+        pela App Store: enquanto baixa, o app aparece só como "placeholder" (ícone esperando)."""
         async def f():
             ld = await _conectar(udid)
             try:
@@ -178,17 +180,17 @@ class BackendReal:
                                           bundle_identifiers=list(WHATSAPP_BUNDLES), show_placeholders=True)
             finally:
                 await ld.close()
+            r = {}
             for bundle in WHATSAPP_BUNDLES:
                 if bundle in instalados:
                     info = instalados[bundle]
                     # Mesma medida usada no iPhone antigo (app + dados), para comparar igual com igual.
                     dados = (info.get("StaticDiskUsage") or 0) + (info.get("DynamicDiskUsage") or 0)
-                    return {"estado": "instalado", "bundle": bundle, "versao": info.get("CFBundleShortVersionString"),
-                            "dados": dados or None}
-            for bundle in WHATSAPP_BUNDLES:
-                if bundle in todos:
-                    return {"estado": "instalando", "bundle": bundle}
-            return {"estado": "ausente"}
+                    r[bundle] = {"estado": "instalado", "versao": info.get("CFBundleShortVersionString"),
+                                 "dados": dados or None}
+                elif bundle in todos:
+                    r[bundle] = {"estado": "instalando"}
+            return r
         return _rodar(f())
 
     def ler_sistema(self):

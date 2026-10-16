@@ -50,8 +50,27 @@ def rodar(saida: Path | None = None) -> bool:
         assert m.estado.etapa == "concluido"
         linhas.append("restauração: ok")
         m.conferir_resultado()
-        assert m.conferir_resultado()["estado"] == "instalado"
+        assert all(r["estado"] == "instalado" for r in m.conferir_resultado().values())
         linhas.append("conferência no iPhone novo: ok")
+
+        # WhatsApp e WhatsApp Business no mesmo iPhone: cada um conferido separadamente.
+        m = Migracao.nova(simulacao=True, cenario="dois_whatsapps")
+        aparelhos = m.procurar()
+        pasta = Path(tempfile.mkdtemp(prefix="migrador-autoteste-backup-"))
+        assert not tem_bloqueio(m.conferir(aparelhos[0], aparelhos[1], pasta))
+        m.criptografia_ativa()
+        m.definir_senha("SENHA-TESTE", guardar=False)
+        m.fazer_backup(lambda p: None, threading.Event())
+        rel = m.verificar(lambda p, msg: None)
+        assert rel.ok, rel.problemas
+        assert [w["bundle"] for w in rel.whatsapps] == ["net.whatsapp.WhatsApp", "net.whatsapp.WhatsAppSMB"]
+        assert all(w["banco_integro"] and w["amostra_conferida"] and not w["amostra_falhas"] for w in rel.whatsapps)
+        _, c = m.conferir_destino()
+        assert not tem_bloqueio(c)
+        m.restaurar(lambda p: None)
+        m.conferir_resultado()
+        assert len(m.conferir_resultado()) == 2
+        linhas.append("dois WhatsApps (comum + Business): ok")
         ok = True
     except Exception:
         linhas.append(traceback.format_exc())

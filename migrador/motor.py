@@ -10,7 +10,9 @@ from pathlib import Path
 from migrador import checagens, disco, estado as est, sistema, telemetria, versoes_ios
 from migrador.dispositivos import criar
 from migrador.dispositivos.base import Aviso, Backend, Cancelado, ErroAparelho
-from migrador.modelos import Aparelho, Checagem, InfoWhatsApp, RelatorioBackup, Status, tem_bloqueio
+from migrador.modelos import (
+    Aparelho, Checagem, InfoWhatsApp, RelatorioBackup, Status, nome_whatsapp, tem_bloqueio,
+)
 from migrador.config import pasta_dados
 from migrador.verificacao import (
     SenhaIncorreta, backup_completo_existe, conferir_antes_de_restaurar, verificar_backup,
@@ -88,15 +90,21 @@ class Migracao:
         self.aparelhos = self.backend.listar()
         return self.aparelhos
 
-    def conferir(self, origem: Aparelho, destino: Aparelho, pasta: Path) -> list[Checagem]:
+    def conferir(self, origem: Aparelho, destino: Aparelho, pasta: Path,
+                 escolhidos: list[str] | None = None) -> list[Checagem]:
+        """`escolhidos`: WhatsApps a migrar e conferir (comum, Business ou os dois). None = todos
+        os instalados no iPhone antigo."""
         c = checagens.checar_conexao(self.aparelhos)
         if tem_bloqueio(c):
             return c
-        whatsapp: InfoWhatsApp | None = None
+        whatsapps: list[InfoWhatsApp] = []
         if origem.udid != destino.udid:
-            whatsapp = self.backend.whatsapp(origem.udid)
-        c += checagens.checar_aparelhos(origem, destino, whatsapp, self.ultimas_versoes())
-        necessario = checagens.tamanho_estimado_backup(origem, whatsapp)
+            whatsapps = self.backend.whatsapps(origem.udid)
+        self.whatsapps_encontrados = whatsapps
+        if escolhidos is None:
+            escolhidos = [w.bundle for w in whatsapps]
+        c += checagens.checar_aparelhos(origem, destino, whatsapps, self.ultimas_versoes(), escolhidos)
+        necessario = checagens.tamanho_estimado_backup(origem, whatsapps)
         # Um backup anterior na mesma pasta é reaproveitado (incremental) e não conta como espaço a ocupar.
         ja_ocupado = _tamanho_pasta(pasta / origem.udid)
         pc = checagens.checar_confianca([origem, destino])
@@ -112,14 +120,22 @@ class Migracao:
         _registrar_checagens("conferência", c)
         self._evento("conferencia", liberada=not tem_bloqueio(c), pendencias=_pendencias(c),
                      origem=_resumo_aparelho(origem), destino=_resumo_aparelho(destino),
-                     whatsapp=whatsapp.bundle if whatsapp else None,
-                     whatsapp_gb=_gb(whatsapp.tamanho if whatsapp else None), estimado_gb=_gb(necessario))
+                     whatsapps={w.bundle: _gb(w.tamanho) for w in whatsapps}, escolhidos=escolhidos,
+                     estimado_gb=_gb(necessario))
         if not tem_bloqueio(c):
             e = self.estado
             e.origem, e.destino = origem.para_dict(), destino.para_dict()
-            e.whatsapp = {"bundle": whatsapp.bundle, "tamanho": whatsapp.tamanho} if whatsapp else None
+            if e.relatorio and set(escolhidos) != set(e.bundles_escolhidos):
+                # A verificação anterior conferiu outros WhatsApps: não vale para a escolha nova.
+                e.relatorio = None
+                e.anotar("Escolha de WhatsApp mudou; o backup precisa ser verificado de novo")
+            e.whatsapps = [{"bundle": w.bundle, "tamanho": w.tamanho} for w in whatsapps]
+            e.escolhidos = list(escolhidos)
+            e.whatsapp = None
             e.pasta_backup = str(pasta)
-            e.anotar(f"Conferência aprovada: {origem.rotulo()} → {destino.rotulo()}; backup em {pasta}")
+            nomes = ", ".join(nome_whatsapp(b) for b in escolhidos)
+            e.anotar(f"Conferência aprovada: {origem.rotulo()} → {destino.rotulo()}; backup em {pasta}; "
+                     f"migrar e conferir: {nomes}")
             e.avancar_para("senha")
             self.salvar()
         return c
@@ -197,7 +213,8 @@ class Migracao:
         try:
             rel = verificar_backup(pasta, self.senha or "", progresso,
                                    exigir_criptografia=e.criptografia_ja_ativa,
-                                   inventario_destino=self._arquivo_inventario())
+                                   inventario_destino=self._arquivo_inventario(),
+                                   bundles=e.bundles_escolhidos or None)
         except SenhaIncorreta:
             self._evento("verificacao_falha", erro="SenhaIncorreta")
             raise ErroAparelho("A senha não abre este backup.", "Digite a senha que foi usada no backup.")
@@ -213,7 +230,11 @@ class Migracao:
                      banco_integro=rel.banco_integro, mensagens=rel.mensagens, conversas=rel.conversas,
                      anexos_referenciados=rel.anexos_referenciados, anexos_presentes=rel.anexos_presentes,
                      amostra=rel.amostra_conferida, amostra_falhas=rel.amostra_falhas,
-                     whatsapp_gb=_gb(rel.bytes_whatsapp))
+                     whatsapp_gb=_gb(rel.bytes_whatsapp), escolhidos=e.bundles_escolhidos,
+                     no_backup=rel.whatsapps_no_backup,
+                     por_app={w["bundle"]: {k: w[k] for k in ("mensagens", "midias", "anexos_referenciados",
+                                                              "anexos_presentes", "amostra_falhas", "banco_integro")}
+                              for w in rel.whatsapps})
         if rel.ok:
             e.avancar_para("destino")
         self.salvar()
@@ -320,8 +341,9 @@ class Migracao:
 
     # --- conferência no iPhone novo ------------------------------------------------------
 
-    def conferir_resultado(self) -> dict:
-        """Depois que o iPhone novo reinicia: o WhatsApp voltou e trouxe os dados?"""
+    def conferir_resultado(self) -> dict[str, dict]:
+        """Depois que o iPhone novo reinicia: cada WhatsApp escolhido voltou e trouxe os dados?
+        Devolve {bundle: {estado, versao, dados, esperado, proporcao}}."""
         e, rel = self.estado, self.relatorio
         if not e.restaurado_em or not e.destino:
             raise ErroAparelho("A restauração ainda não foi concluída.")
@@ -333,21 +355,30 @@ class Migracao:
         if ap.erro:
             raise ErroAparelho("O iPhone novo ainda não liberou a conexão.",
                                "Desbloqueie o iPhone novo, toque em \"Confiar\" se aparecer e tente de novo.")
-        r = self.backend.whatsapp_no_destino(e.destino["udid"])
-        # Compara com o que o iPhone antigo informava do WhatsApp (mesma medida: app + dados).
-        esperado = (e.whatsapp or {}).get("tamanho") or (rel.bytes_whatsapp if rel else 0)
-        r["esperado"] = esperado
-        if r.get("estado") == "instalado" and esperado and r.get("dados") is not None:
-            r["proporcao"] = round(r["dados"] / esperado, 2)
-        e.resultado = r
-        e.anotar(f"Conferência no iPhone novo: WhatsApp {r.get('estado')}"
-                 + (f", dados {r['proporcao']:.0%} do backup" if "proporcao" in r else ""))
+        no_destino = self.backend.whatsapps_no_destino(e.destino["udid"])
+        por_bundle = {w["bundle"]: w for w in (rel.whatsapps if rel else [])}
+        resultado = {}
+        for bundle in e.bundles_escolhidos:
+            r = dict(no_destino.get(bundle) or {"estado": "ausente"})
+            # Compara com o que o iPhone antigo informava (mesma medida: app + dados).
+            esperado = e.tamanho_whatsapp(bundle) or por_bundle.get(bundle, {}).get("bytes_whatsapp") or 0
+            r["esperado"] = esperado
+            if r.get("estado") == "instalado" and esperado and r.get("dados") is not None:
+                r["proporcao"] = round(r["dados"] / esperado, 2)
+            resultado[bundle] = r
+        e.resultado = resultado
+        resumo = "; ".join(f"{nome_whatsapp(b)} {r.get('estado')}"
+                           + (f" ({r['proporcao']:.0%} dos dados)" if "proporcao" in r else "")
+                           for b, r in resultado.items())
+        e.anotar(f"Conferência no iPhone novo: {resumo}")
         self.salvar()
-        self._evento("resultado", estado=r.get("estado"), dados_gb=_gb(r.get("dados")), esperado_gb=_gb(esperado),
-                     proporcao=r.get("proporcao"), versao_whatsapp=r.get("versao"))
-        return r
+        self._evento("resultado", por_app={b: {"estado": r.get("estado"), "dados_gb": _gb(r.get("dados")),
+                                               "esperado_gb": _gb(r.get("esperado")), "proporcao": r.get("proporcao"),
+                                               "versao": r.get("versao")} for b, r in resultado.items()})
+        return resultado
 
     def confirmar_resultado(self, conversas_ok: bool, midias_ok: bool, observacao: str = "") -> None:
+        """A pessoa conferiu no iPhone novo (todos os WhatsApps escolhidos)."""
         e = self.estado
         e.confirmado_em = datetime.now().isoformat(timespec="seconds")
         e.anotar(f"Pessoa conferiu no iPhone novo: conversas {'OK' if conversas_ok else 'COM PROBLEMA'}, "
@@ -355,6 +386,7 @@ class Migracao:
         self.salvar()
         from migrador.diagnostico import anonimizar
         self._evento("resultado_confirmado", conversas_ok=conversas_ok, midias_ok=midias_ok,
+                     escolhidos=e.bundles_escolhidos,
                      observacao=anonimizar(observacao)[:500] or None)
 
 

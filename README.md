@@ -20,6 +20,15 @@ Programa gratuito e de código aberto para Windows, desenvolvido pela **DAGUMASI
 5. **Restauração.** O backup vai para o iPhone novo, o mesmo escolhido na conferência.
 6. **Conferência no iPhone novo.** Depois que ele reinicia, o programa confere se o WhatsApp voltou e se o volume de dados é compatível com o do iPhone antigo. Você marca se as conversas e as mídias antigas aparecem.
 
+## WhatsApp e WhatsApp Business no mesmo iPhone
+
+Se o iPhone antigo tiver os dois, a conferência pergunta quais migrar: **os dois** (padrão), **só o WhatsApp** ou **só o WhatsApp Business**.
+
+- Cada WhatsApp escolhido é conferido separadamente na verificação: banco de conversas, anexos e amostra de mídias. Qualquer um com problema reprova o backup, e a mensagem diz qual foi.
+- No iPhone novo, o programa confere cada escolhido (instalado e volume de dados).
+- O backup e a restauração da Apple são sempre do iPhone inteiro. Por isso, o WhatsApp não escolhido **também vai** para o iPhone novo, só não é conferido. A tela diz isso. Se não quiser ele no novo, apague o app lá depois de conferir o escolhido.
+- Mudar a escolha depois de verificar o backup exige verificar de novo.
+
 ## O que o programa garante e o que não garante
 
 **Garante:**
@@ -144,7 +153,7 @@ Não desconecte o cabo. O iPhone mostra "Restaurando…" e reinicia sozinho ao f
 
 ## Modo simulação (treino)
 
-Na tela inicial, escolha **Simulação** e uma situação: tudo certo, iPhone novo desatualizado, sem espaço, Buscar iPhone ligado, cabo desconectando no meio do backup, backup corrompido, senha de backup já existente (senha `1234`) e outras. O programa percorre as mesmas telas e roda a mesma verificação de backup usada com aparelhos reais, sobre um backup falso gerado com a estrutura de um backup verdadeiro e criptografado com a senha escolhida (keybag, chave por arquivo e Manifest.db cifrado, como no iPhone). Uma faixa laranja deixa claro que nada é real.
+Na tela inicial, escolha **Simulação** e uma situação: tudo certo, iPhone novo desatualizado, sem espaço, Buscar iPhone ligado, cabo desconectando no meio do backup, backup corrompido, senha de backup já existente (senha `1234`), WhatsApp e WhatsApp Business no mesmo iPhone, só o Business e outras. O programa percorre as mesmas telas e roda a mesma verificação de backup usada com aparelhos reais, sobre um backup falso gerado com a estrutura de um backup verdadeiro e criptografado com a senha escolhida (keybag, chave por arquivo e Manifest.db cifrado, como no iPhone). Uma faixa laranja deixa claro que nada é real.
 
 Também dá para abrir direto no modo simulação: `MigradorWhatsApp.exe --simulacao`.
 

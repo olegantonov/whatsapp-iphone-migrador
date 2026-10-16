@@ -28,6 +28,10 @@ NOMES_MODELOS = {
 }
 
 
+def nome_whatsapp(bundle: str) -> str:
+    return WHATSAPP_BUNDLES.get(bundle, bundle)
+
+
 def nome_modelo(tipo: str) -> str:
     return NOMES_MODELOS.get(tipo, f"iPhone ({tipo})" if tipo else "iPhone")
 
@@ -107,6 +111,28 @@ class InfoWhatsApp:
         return WHATSAPP_BUNDLES.get(self.bundle, self.bundle)
 
 
+@dataclass
+class ResultadoWhatsApp:
+    """Conferência de um WhatsApp (comum ou Business) dentro do backup."""
+    bundle: str
+    nome: str = ""
+    conversas: int = 0
+    mensagens: int = 0
+    midias: int = 0
+    bytes_midia: int = 0
+    bytes_whatsapp: int = 0
+    banco_integro: bool = False
+    anexos_referenciados: int = 0
+    anexos_presentes: int = 0
+    amostra_conferida: int = 0
+    amostra_falhas: int = 0
+    problemas: list[str] = field(default_factory=list)
+    avisos: list[str] = field(default_factory=list)
+
+    def para_dict(self) -> dict:
+        return asdict(self)
+
+
 class Status(str, Enum):
     OK = "ok"
     AVISO = "aviso"
@@ -152,6 +178,9 @@ class RelatorioBackup:
     amostra_conferida: int = 0
     amostra_falhas: int = 0
     bytes_whatsapp: int = 0
+    # Versão 3 em diante (1.1.1): um resultado por WhatsApp conferido (comum e/ou Business).
+    whatsapps: list[dict] = field(default_factory=list)
+    whatsapps_no_backup: list[str] = field(default_factory=list)
 
     def para_dict(self) -> dict:
         return asdict(self)

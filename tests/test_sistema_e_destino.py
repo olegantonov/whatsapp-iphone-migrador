@@ -108,9 +108,9 @@ def test_conferencia_do_whatsapp_no_iphone_novo(tmp_path):
     m = _ate_destino(tmp_path)
     m.conferir_destino()
     m.restaurar(lambda p: None)
-    assert m.conferir_resultado()["estado"] == "instalando"
-    r = m.conferir_resultado()
-    assert r["estado"] == "instalado" and r["proporcao"] > 0
+    assert m.conferir_resultado()["net.whatsapp.WhatsApp"]["estado"] == "instalando"
+    r = m.conferir_resultado()["net.whatsapp.WhatsApp"]
+    assert r["estado"] == "instalado" and r["proporcao"] > 0.9
     m.confirmar_resultado(True, True)
     assert m.estado.confirmado_em
 

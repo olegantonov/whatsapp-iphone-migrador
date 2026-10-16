@@ -3,7 +3,7 @@ from pathlib import Path
 
 from migrador.config import BATERIA_MINIMA, FOLGA_DESTINO_BYTES, FOLGA_PC_BYTES
 from migrador.dispositivos.base import PRECISA_CONFIAR, PRECISA_DESBLOQUEAR
-from migrador.modelos import Aparelho, Checagem, InfoWhatsApp, Status, formatar_bytes
+from migrador.modelos import WHATSAPP_BUNDLES, Aparelho, Checagem, InfoWhatsApp, Status, formatar_bytes
 from migrador.versoes_ios import comparar
 
 ATUALIZAR = "No iPhone: Ajustes > Geral > Atualização de Software > Baixar e Instalar."
@@ -14,10 +14,41 @@ DESLIGAR_BUSCAR = (
 )
 
 
-def tamanho_estimado_backup(origem: Aparelho, whatsapp: InfoWhatsApp | None) -> int:
-    """O backup nunca passa do espaço usado no iPhone; o WhatsApp sozinho é o piso."""
-    candidatos = [v for v in (origem.usado, whatsapp.tamanho if whatsapp else None) if v]
+def tamanho_estimado_backup(origem: Aparelho, whatsapps: list[InfoWhatsApp]) -> int:
+    """O backup nunca passa do espaço usado no iPhone; os WhatsApps somados são o piso (o backup
+    é do iPhone inteiro, então todos vão, escolhidos ou não)."""
+    soma = sum(w.tamanho or 0 for w in whatsapps)
+    candidatos = [v for v in (origem.usado, soma) if v]
     return max(candidatos) if candidatos else 0
+
+
+def checar_whatsapps(encontrados: list[InfoWhatsApp], escolhidos: list[str]) -> list[Checagem]:
+    """Quais WhatsApps estão no iPhone antigo e quais a pessoa escolheu migrar e conferir."""
+    if not encontrados:
+        return [Checagem("WhatsApp no iPhone antigo", Status.BLOQUEIO,
+                         "Nem o WhatsApp nem o WhatsApp Business foram encontrados no aparelho escolhido como antigo.",
+                         "Confira se os aparelhos não estão trocados em \"iPhone antigo\" e \"iPhone novo\".")]
+    c = []
+    nomes = {w.bundle: w.nome for w in encontrados}
+    for w in encontrados:
+        tam = f" ({formatar_bytes(w.tamanho)})" if w.tamanho else ""
+        if w.bundle in escolhidos:
+            c.append(Checagem(f"{w.nome} no iPhone antigo", Status.OK,
+                              f"Instalado{tam}. Será conferido no backup e no iPhone novo."))
+        else:
+            c.append(Checagem(f"{w.nome} no iPhone antigo", Status.INFO,
+                              f"Instalado{tam}, mas não foi escolhido. O backup é do iPhone inteiro, então ele "
+                              "também vai para o iPhone novo; só não é conferido. Se não quiser ele no novo, "
+                              "apague o app no iPhone novo depois de conferir o escolhido."))
+    for b in escolhidos:
+        if b not in nomes:
+            c.append(Checagem(f"{WHATSAPP_BUNDLES.get(b, b)} no iPhone antigo", Status.BLOQUEIO,
+                              "Foi escolhido, mas não está instalado no iPhone antigo.",
+                              "Escolha só os WhatsApps que aparecem como instalados."))
+    if not escolhidos:
+        c.append(Checagem("WhatsApp a migrar", Status.BLOQUEIO, "Nenhum WhatsApp foi escolhido.",
+                          "Escolha o WhatsApp, o WhatsApp Business ou os dois."))
+    return c
 
 
 def checar_pc(servico_ok: bool | None, pasta: Path, livre: int, sistema_arquivos: str | None,
@@ -65,24 +96,19 @@ def checar_conexao(aparelhos: list[Aparelho]) -> list[Checagem]:
     return c
 
 
-def checar_aparelhos(origem: Aparelho, destino: Aparelho, whatsapp: InfoWhatsApp | None,
-                     ultimas: dict[str, str] | None) -> list[Checagem]:
+def checar_aparelhos(origem: Aparelho, destino: Aparelho, whatsapps: list[InfoWhatsApp],
+                     ultimas: dict[str, str] | None, escolhidos: list[str] | None = None) -> list[Checagem]:
     c: list[Checagem] = []
     if origem.udid == destino.udid:
         return [Checagem("Aparelhos", Status.BLOQUEIO, "O iPhone antigo e o novo são o mesmo aparelho.",
                          "Escolha aparelhos diferentes em \"iPhone antigo\" e \"iPhone novo\".")]
 
-    if whatsapp:
-        tam = f" ({formatar_bytes(whatsapp.tamanho)})" if whatsapp.tamanho else ""
-        c.append(Checagem(f"{whatsapp.nome} no iPhone antigo", Status.OK, f"Instalado{tam}."))
-    else:
-        c.append(Checagem("WhatsApp no iPhone antigo", Status.BLOQUEIO,
-                          "O WhatsApp não foi encontrado no aparelho escolhido como antigo.",
-                          "Confira se os aparelhos não estão trocados em \"iPhone antigo\" e \"iPhone novo\"."))
+    escolhidos = [w.bundle for w in whatsapps] if escolhidos is None else escolhidos
+    c += checar_whatsapps(whatsapps, escolhidos)
 
     c += _checar_versoes(origem, destino, ultimas)
 
-    necessario = tamanho_estimado_backup(origem, whatsapp) + FOLGA_DESTINO_BYTES
+    necessario = tamanho_estimado_backup(origem, whatsapps) + FOLGA_DESTINO_BYTES
     if destino.capacidade is None:
         c.append(Checagem("Espaço no iPhone novo", Status.AVISO, "Não consegui ler a capacidade do iPhone novo.",
                           "Confira em Ajustes > Geral > Armazenamento que ele tem mais espaço que o antigo usa."))

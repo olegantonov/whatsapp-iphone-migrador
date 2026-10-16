@@ -25,55 +25,55 @@ def _titulos_bloqueio(c):
 
 def test_caso_feliz_sem_bloqueio():
     o, d = _par()
-    assert not tem_bloqueio(checagens.checar_aparelhos(o, d, WA, ULTIMAS))
+    assert not tem_bloqueio(checagens.checar_aparelhos(o, d, [WA], ULTIMAS))
 
 
 def test_destino_com_ios_mais_antigo_bloqueia():
     o, d = _par(ios="26.4")
-    c = checagens.checar_aparelhos(o, d, WA, ULTIMAS)
+    c = checagens.checar_aparelhos(o, d, [WA], ULTIMAS)
     assert "Versão do iOS" in _titulos_bloqueio(c)
 
 
 def test_destino_desatualizado_mesmo_acima_da_origem_bloqueia():
     o, d = _par(ios="27.0")
     o.ios = "26.6"
-    c = checagens.checar_aparelhos(o, d, WA, ULTIMAS)
+    c = checagens.checar_aparelhos(o, d, [WA], ULTIMAS)
     assert "iOS do iPhone novo" in _titulos_bloqueio(c)
 
 
 def test_origem_desatualizada_so_avisa():
     o, d = _par()
     o.ios = "26.6"
-    c = checagens.checar_aparelhos(o, d, WA, ULTIMAS)
+    c = checagens.checar_aparelhos(o, d, [WA], ULTIMAS)
     assert not tem_bloqueio(c)
     assert any(x.titulo == "iOS do iPhone antigo" and x.status == Status.AVISO for x in c)
 
 
 def test_sem_consulta_a_apple_avisa_mas_nao_bloqueia():
     o, d = _par()
-    c = checagens.checar_aparelhos(o, d, WA, None)
+    c = checagens.checar_aparelhos(o, d, [WA], None)
     assert not tem_bloqueio(c)
     assert any(x.titulo == "Atualizações do iOS" for x in c)
 
 
 def test_destino_pequeno_bloqueia():
     o, d = _par(capacidade=128 * GB)
-    assert "Espaço no iPhone novo" in _titulos_bloqueio(checagens.checar_aparelhos(o, d, WA, ULTIMAS))
+    assert "Espaço no iPhone novo" in _titulos_bloqueio(checagens.checar_aparelhos(o, d, [WA], ULTIMAS))
 
 
 def test_buscar_ligado_no_destino_bloqueia():
     o, d = _par(buscar_ativo=True)
-    assert any("Buscar" in t for t in _titulos_bloqueio(checagens.checar_aparelhos(o, d, WA, ULTIMAS)))
+    assert any("Buscar" in t for t in _titulos_bloqueio(checagens.checar_aparelhos(o, d, [WA], ULTIMAS)))
 
 
 def test_sem_whatsapp_bloqueia():
     o, d = _par()
-    assert any("WhatsApp" in t for t in _titulos_bloqueio(checagens.checar_aparelhos(o, d, None, ULTIMAS)))
+    assert any("WhatsApp" in t for t in _titulos_bloqueio(checagens.checar_aparelhos(o, d, [], ULTIMAS)))
 
 
 def test_mesmo_aparelho_bloqueia():
     o, _ = _par()
-    assert tem_bloqueio(checagens.checar_aparelhos(o, o, WA, ULTIMAS))
+    assert tem_bloqueio(checagens.checar_aparelhos(o, o, [WA], ULTIMAS))
 
 
 def test_espaco_no_pc():

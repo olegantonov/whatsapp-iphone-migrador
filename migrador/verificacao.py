@@ -18,18 +18,20 @@ import logging
 import os
 import plistlib
 import random
+import re
 import shutil
 import sqlite3
 import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from migrador.modelos import WHATSAPP_BUNDLES, RelatorioBackup
+from migrador.modelos import WHATSAPP_BUNDLES, RelatorioBackup, ResultadoWhatsApp, nome_whatsapp
 
 log = logging.getLogger(__name__)
 
 # Versão das regras de conferência. Um relatório de versão anterior exige verificar de novo.
-VERSAO_CONFERENCIA = 2
+# 3 (1.1.1): cada WhatsApp escolhido (comum e/ou Business) é conferido separadamente.
+VERSAO_CONFERENCIA = 3
 
 ARQUIVOS_METADADOS = ("Info.plist", "Manifest.plist", "Manifest.db", "Status.plist")
 ARQUIVOS_IMPRESSAO = ARQUIVOS_METADADOS
@@ -58,6 +60,12 @@ class FalhaDecifrar(Exception):
 
 def dominio_grupo(bundle: str) -> str:
     return f"AppDomainGroup-group.{bundle}.shared"
+
+
+def dominio_do_app(dominio: str, bundle: str) -> bool:
+    """O domínio pertence a este app? Compara o identificador inteiro: "net.whatsapp.WhatsApp"
+    não pode casar com "net.whatsapp.WhatsAppSMB" (o Business)."""
+    return re.search(rf"(^|[-.]){re.escape(bundle)}($|\.)", dominio) is not None
 
 
 # --- impressão digital e inventário --------------------------------------------------------
@@ -288,7 +296,10 @@ def verificar_backup(
     progresso: Callable[[float, str], None] | None = None,
     exigir_criptografia: bool = False,
     inventario_destino: Path | None = None,
+    bundles: list[str] | None = None,
 ) -> RelatorioBackup:
+    """`bundles`: WhatsApps que precisam estar no backup e ser conferidos (comum, Business ou os
+    dois). None = todos os que estiverem no backup."""
     progresso = progresso or (lambda p, m: None)
     rel = RelatorioBackup(ok=False, versao_conferencia=VERSAO_CONFERENCIA)
 
@@ -334,7 +345,7 @@ def verificar_backup(
             rel.problemas.append(f"Não foi possível ler o índice do backup ({e}).")
             return rel
         try:
-            _percorrer(aberto, rel, progresso, tmp)
+            _percorrer(aberto, rel, progresso, tmp, bundles)
         finally:
             aberto.fechar()
     finally:
@@ -350,7 +361,8 @@ def verificar_backup(
     return rel
 
 
-def _percorrer(aberto: _BackupAberto, rel: RelatorioBackup, progresso, tmp: Path) -> None:
+def _percorrer(aberto: _BackupAberto, rel: RelatorioBackup, progresso, tmp: Path,
+               escolhidos: list[str] | None) -> None:
     total = aberto.total()
     grupos = {dominio_grupo(b): b for b in WHATSAPP_BUNDLES}
     bundles_encontrados: set[str] = set()
@@ -359,6 +371,7 @@ def _percorrer(aberto: _BackupAberto, rel: RelatorioBackup, progresso, tmp: Path
     amostra: dict[str, list] = {}
     vistos_amostra: dict[str, int] = {}
     bytes_por_bundle: dict[str, int] = {}
+    contagem_midias: dict[str, tuple[int, int]] = {}
     tamanho_errado = 0
     rnd = random.Random()
 
@@ -384,15 +397,15 @@ def _percorrer(aberto: _BackupAberto, rel: RelatorioBackup, progresso, tmp: Path
             tamanho_errado += 1
 
         for b in WHATSAPP_BUNDLES:
-            if b in entrada.domain:
+            if dominio_do_app(entrada.domain, b):
                 bytes_por_bundle[b] = bytes_por_bundle.get(b, 0) + entrada.size
         bundle = grupos.get(entrada.domain)
         if bundle:
             bundles_encontrados.add(bundle)
             caminho = entrada.relative_path
             if caminho.startswith("Message/Media/"):
-                rel.midias += 1
-                rel.bytes_midia += entrada.size
+                n_midias, b_midias = contagem_midias.get(bundle, (0, 0))
+                contagem_midias[bundle] = (n_midias + 1, b_midias + entrada.size)
                 midias_por_bundle.setdefault(bundle, set()).add(caminho)
                 if 0 < entrada.size <= AMOSTRA_MAX_ARQUIVO and not errado:
                     # Amostragem uniforme sem guardar todas as entradas (reservoir sampling).
@@ -413,22 +426,62 @@ def _percorrer(aberto: _BackupAberto, rel: RelatorioBackup, progresso, tmp: Path
     if tamanho_errado:
         rel.problemas.append(f"{tamanho_errado} arquivo(s) do backup estão com tamanho diferente do esperado.")
 
-    bundle = next((b for b in WHATSAPP_BUNDLES if "ChatStorage.sqlite" in entradas_chat.get(b, {})), None)
-    if not bundle:
+    com_banco = [b for b in WHATSAPP_BUNDLES if "ChatStorage.sqlite" in entradas_chat.get(b, {})]
+    rel.whatsapps_no_backup = [b for b in WHATSAPP_BUNDLES if b in bundles_encontrados]
+    alvo = list(escolhidos) if escolhidos else com_banco
+    if not alvo:
         if bundles_encontrados:
             rel.problemas.append("O WhatsApp aparece no backup, mas o banco de conversas (ChatStorage.sqlite) não.")
         else:
             rel.problemas.append("O WhatsApp não está neste backup.")
         return
-    rel.whatsapp_bundle = bundle
-    rel.bytes_whatsapp = bytes_por_bundle.get(bundle, 0)
-    progresso(72, "Testando uma amostra de fotos, vídeos e áudios…")
-    _testar_amostra(amostra.get(bundle, []), aberto.keybag, rel)
-    progresso(80, "Abrindo o banco de conversas do WhatsApp…")
-    _conferir_banco(entradas_chat[bundle], rel, aberto.keybag, tmp, midias_por_bundle.get(bundle, set()), progresso)
+
+    for b in rel.whatsapps_no_backup:
+        if b not in alvo:
+            rel.avisos.append(f"O {nome_whatsapp(b)} também está no backup e vai para o iPhone novo, mas não foi "
+                              "conferido porque não foi escolhido.")
+    # Mensagens com o nome do app quando houver mais de um no backup, para não haver dúvida de qual falhou.
+    com_nome = len(alvo) > 1 or len(rel.whatsapps_no_backup) > 1
+    passo = 28 / len(alvo)
+    for k, bundle in enumerate(alvo):
+        r = ResultadoWhatsApp(bundle=bundle, nome=nome_whatsapp(bundle))
+        r.midias, r.bytes_midia = contagem_midias.get(bundle, (0, 0))
+        r.bytes_whatsapp = bytes_por_bundle.get(bundle, 0)
+        base = 70 + k * passo
+        if bundle not in bundles_encontrados:
+            r.problemas.append(f"O {r.nome} foi escolhido, mas não está no backup.")
+        elif bundle not in com_banco:
+            r.problemas.append(f"O {r.nome} aparece no backup, mas o banco de conversas (ChatStorage.sqlite) não.")
+        else:
+            progresso(base, f"{r.nome}: testando uma amostra de fotos, vídeos e áudios…")
+            _testar_amostra(amostra.get(bundle, []), aberto.keybag, r)
+            progresso(base + passo / 3, f"{r.nome}: abrindo o banco de conversas…")
+            _conferir_banco(entradas_chat[bundle], r, aberto.keybag, tmp / bundle,
+                            midias_por_bundle.get(bundle, set()), progresso, base + passo / 2)
+        _juntar(rel, r, com_nome)
 
 
-def _testar_amostra(entradas: list, keybag, rel: RelatorioBackup) -> None:
+def _juntar(rel: RelatorioBackup, r: ResultadoWhatsApp, com_nome: bool) -> None:
+    prefixo = f"{r.nome}: " if com_nome else ""
+    rel.problemas += [prefixo + p for p in r.problemas]
+    rel.avisos += [prefixo + a for a in r.avisos]
+    rel.whatsapps.append(r.para_dict())
+    if not rel.whatsapp_bundle:
+        rel.whatsapp_bundle = r.bundle
+    # Totais (somados) para telas e eventos que mostram um número só.
+    rel.conversas += r.conversas
+    rel.mensagens += r.mensagens
+    rel.midias += r.midias
+    rel.bytes_midia += r.bytes_midia
+    rel.bytes_whatsapp += r.bytes_whatsapp
+    rel.anexos_referenciados += max(r.anexos_referenciados, 0)
+    rel.anexos_presentes += r.anexos_presentes
+    rel.amostra_conferida += r.amostra_conferida
+    rel.amostra_falhas += r.amostra_falhas
+    rel.banco_integro = all(w["banco_integro"] for w in rel.whatsapps)
+
+
+def _testar_amostra(entradas: list, keybag, r: ResultadoWhatsApp) -> None:
     """Decifra cada mídia da amostra por inteiro (prova que a chave e os dados estão bons) e
     confere se o começo do arquivo combina com a extensão."""
     falhas = formato = total_bytes = 0
@@ -445,19 +498,19 @@ def _testar_amostra(entradas: list, keybag, rel: RelatorioBackup) -> None:
                                         tamanho_esperado=entrada.size)
         except (FalhaDecifrar, OSError) as e:
             falhas += 1
-            log.warning("mídia da amostra não decifrou: %s", e)
+            log.warning("mídia da amostra não decifrou (%s): %s", r.nome, e)
             continue
-        rel.amostra_conferida += 1
+        r.amostra_conferida += 1
         esperadas = ASSINATURAS.get(Path(entrada.relative_path).suffix.lower())
         if esperadas and not any(inicio[o:o + len(m)] == m for o, m in esperadas):
             formato += 1
-    rel.amostra_falhas = falhas
+    r.amostra_falhas = falhas
     if falhas:
-        rel.problemas.append(f"{falhas} de {falhas + rel.amostra_conferida} mídias testadas não puderam ser "
-                             "decifradas: o backup está danificado. Faça o backup de novo.")
+        r.problemas.append(f"{falhas} de {falhas + r.amostra_conferida} mídias testadas não puderam ser "
+                           "decifradas: o backup está danificado. Faça o backup de novo.")
     if formato:
-        rel.avisos.append(f"{formato} de {rel.amostra_conferida} mídias testadas têm conteúdo diferente do que a "
-                          "extensão indica. Isso pode ser normal no WhatsApp, mas vale conferir as mídias depois.")
+        r.avisos.append(f"{formato} de {r.amostra_conferida} mídias testadas têm conteúdo diferente do que a "
+                        "extensão indica. Isso pode ser normal no WhatsApp, mas vale conferir as mídias depois.")
 
 
 def _normalizar_anexo(caminho: str) -> str:
@@ -469,69 +522,70 @@ def _normalizar_anexo(caminho: str) -> str:
     return "Message/" + caminho
 
 
-def _conferir_banco(entradas: dict, rel: RelatorioBackup, keybag, tmp: Path, midias: set[str], progresso) -> None:
-    pasta_banco = tmp / "banco"
-    pasta_banco.mkdir()
+def _conferir_banco(entradas: dict, r: ResultadoWhatsApp, keybag, tmp: Path, midias: set[str], progresso,
+                    pct: float) -> None:
+    tmp.mkdir(parents=True, exist_ok=True)
     try:
         for nome, entrada in entradas.items():
-            _extrair(entrada, pasta_banco / nome, keybag)
+            _extrair(entrada, tmp / nome, keybag)
     except FalhaDecifrar as e:
-        rel.banco_integro = False
-        rel.problemas.append(f"O banco de conversas do WhatsApp não pôde ser decifrado ({e}).")
+        r.banco_integro = False
+        r.problemas.append(f"O banco de conversas não pôde ser decifrado ({e}).")
         return
     except OSError as e:
-        rel.problemas.append(f"Não consegui copiar o banco de conversas para conferir ({e}). Confira o espaço "
-                             "livre no disco do backup.")
+        r.problemas.append(f"Não consegui copiar o banco de conversas para conferir ({e}). Confira o espaço "
+                           "livre no disco do backup.")
         return
     con = None
     try:
-        con = sqlite3.connect(pasta_banco / "ChatStorage.sqlite")
-        progresso(85, "Testando a integridade do banco de conversas…")
+        con = sqlite3.connect(tmp / "ChatStorage.sqlite")
+        progresso(pct, f"{r.nome}: testando a integridade do banco de conversas…")
         resultado = con.execute("PRAGMA quick_check").fetchone()[0]
-        rel.banco_integro = resultado == "ok"
-        if not rel.banco_integro:
-            rel.problemas.append(f"O banco de conversas do WhatsApp está corrompido ({resultado}).")
+        r.banco_integro = resultado == "ok"
+        if not r.banco_integro:
+            r.problemas.append(f"O banco de conversas está corrompido ({resultado}).")
             return
-        rel.conversas = con.execute("SELECT COUNT(*) FROM ZWACHATSESSION").fetchone()[0]
-        rel.mensagens = con.execute("SELECT COUNT(*) FROM ZWAMESSAGE").fetchone()[0]
-        progresso(92, "Cruzando os anexos das conversas com os arquivos do backup…")
-        _cruzar_anexos(con, midias, rel)
+        r.conversas = con.execute("SELECT COUNT(*) FROM ZWACHATSESSION").fetchone()[0]
+        r.mensagens = con.execute("SELECT COUNT(*) FROM ZWAMESSAGE").fetchone()[0]
+        _cruzar_anexos(con, midias, r)
     except sqlite3.DatabaseError as e:
-        rel.banco_integro = False
-        rel.problemas.append(f"Não foi possível ler o banco de conversas do WhatsApp ({e}).")
+        r.banco_integro = False
+        r.problemas.append(f"Não foi possível ler o banco de conversas ({e}).")
         return
     finally:
         if con:
             con.close()
+        # Libera o espaço logo (o banco de cada app pode ter GB).
+        shutil.rmtree(tmp, ignore_errors=True)
 
-    if rel.mensagens == 0:
-        rel.problemas.append("O banco do WhatsApp foi encontrado, mas não tem nenhuma mensagem.")
-    if rel.midias == 0:
-        rel.avisos.append("Nenhuma foto, vídeo ou áudio do WhatsApp foi encontrado no backup.")
+    if r.mensagens == 0:
+        r.problemas.append("O banco de conversas foi encontrado, mas não tem nenhuma mensagem.")
+    if r.midias == 0:
+        r.avisos.append("Nenhuma foto, vídeo ou áudio foi encontrado no backup.")
 
 
-def _cruzar_anexos(con: sqlite3.Connection, midias: set[str], rel: RelatorioBackup) -> None:
+def _cruzar_anexos(con: sqlite3.Connection, midias: set[str], r: ResultadoWhatsApp) -> None:
     """Cada anexo que as conversas citam está no backup? Só contagens: os caminhos têm números
     de telefone dos contatos e não vão para o log."""
     try:
         cursor = con.execute("SELECT ZMEDIALOCALPATH FROM ZWAMEDIAITEM "
                              "WHERE ZMEDIALOCALPATH IS NOT NULL AND ZMEDIALOCALPATH != ''")
     except sqlite3.DatabaseError:
-        rel.avisos.append("Não consegui cruzar os anexos com as conversas (o banco do WhatsApp tem outro formato).")
-        rel.anexos_referenciados = -1
+        r.avisos.append("Não consegui cruzar os anexos com as conversas (o banco tem outro formato).")
+        r.anexos_referenciados = -1
         return
     for (caminho,) in cursor:
-        rel.anexos_referenciados += 1
+        r.anexos_referenciados += 1
         if _normalizar_anexo(caminho) in midias:
-            rel.anexos_presentes += 1
-    ausentes = rel.anexos_referenciados - rel.anexos_presentes
-    if rel.anexos_referenciados and not rel.anexos_presentes:
-        rel.problemas.append(f"As conversas citam {rel.anexos_referenciados} anexos e nenhum deles está no backup. "
-                             "As mídias não foram copiadas; faça o backup de novo.")
+            r.anexos_presentes += 1
+    ausentes = r.anexos_referenciados - r.anexos_presentes
+    if r.anexos_referenciados and not r.anexos_presentes:
+        r.problemas.append(f"As conversas citam {r.anexos_referenciados} anexos e nenhum deles está no backup. "
+                           "As mídias não foram copiadas; faça o backup de novo.")
     elif ausentes:
-        pct = ausentes * 100 / rel.anexos_referenciados
-        rel.avisos.append(
-            f"{ausentes} de {rel.anexos_referenciados} anexos citados nas conversas ({pct:.1f}%) não estão no "
+        pct = ausentes * 100 / r.anexos_referenciados
+        r.avisos.append(
+            f"{ausentes} de {r.anexos_referenciados} anexos citados nas conversas ({pct:.1f}%) não estão no "
             "backup. Normalmente são mídias que já não estão no iPhone antigo (apagadas para liberar espaço ou "
             "nunca baixadas). Antes de continuar, abra no iPhone antigo uma conversa antiga com fotos e confira "
             "se elas aparecem.")

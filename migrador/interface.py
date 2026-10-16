@@ -22,7 +22,8 @@ from migrador.dispositivos.base import Cancelado, ErroAparelho
 from migrador.dispositivos.simulado import CENARIOS
 from migrador.estado import CHAVES_ETAPAS, ETAPAS
 from migrador.modelos import (
-    Aparelho, Checagem, RelatorioBackup, Status, formatar_bytes, formatar_duracao, tem_bloqueio,
+    WHATSAPP_BUNDLES, Aparelho, Checagem, RelatorioBackup, Status, formatar_bytes, formatar_duracao,
+    nome_whatsapp, tem_bloqueio,
 )
 from migrador.motor import Migracao
 from migrador.versao import __version__
@@ -53,17 +54,70 @@ def _milhar(n: int) -> str:
     return f"{n:,}".replace(",", ".")
 
 
-def _checagem_anexos(rel: RelatorioBackup) -> Checagem:
-    titulo = "Anexos citados nas conversas"
-    if rel.anexos_referenciados < 0:
+def _checagem_anexos(w: dict, titulo: str = "Anexos citados nas conversas") -> Checagem:
+    ref, presentes = w.get("anexos_referenciados", 0), w.get("anexos_presentes", 0)
+    if ref < 0:
         return Checagem(titulo, Status.AVISO, "Não consegui cruzar (formato do banco diferente).")
-    if not rel.anexos_referenciados:
+    if not ref:
         return Checagem(titulo, Status.INFO, "As conversas não citam anexos.")
-    ausentes = rel.anexos_referenciados - rel.anexos_presentes
-    texto = (f"{rel.anexos_presentes:,} de {rel.anexos_referenciados:,} estão no backup".replace(",", ".")
-             + (f" ({ausentes:,} ausentes)".replace(",", ".") if ausentes else ""))
-    status = Status.OK if not ausentes else (Status.BLOQUEIO if not rel.anexos_presentes else Status.AVISO)
+    ausentes = ref - presentes
+    texto = f"{_milhar(presentes)} de {_milhar(ref)} estão no backup" + (f" ({_milhar(ausentes)} ausentes)"
+                                                                          if ausentes else "")
+    status = Status.OK if not ausentes else (Status.BLOQUEIO if not presentes else Status.AVISO)
     return Checagem(titulo, status, texto)
+
+
+def _itens_whatsapp(w: dict, com_nome: bool) -> list[Checagem]:
+    """Resultado da verificação de um WhatsApp (comum ou Business)."""
+    nome = w.get("nome") or nome_whatsapp(w["bundle"])
+    p = f"{nome}: " if com_nome else ""
+    falhas = w.get("amostra_falhas", 0)
+    conferidas = w.get("amostra_conferida", 0)
+    return [
+        Checagem(f"{p}conversas" if com_nome else "Conversas do WhatsApp",
+                 Status.OK if w.get("conversas") else Status.AVISO, _milhar(w.get("conversas", 0))),
+        Checagem(f"{p}mensagens" if com_nome else "Mensagens",
+                 Status.OK if w.get("mensagens") else Status.BLOQUEIO, _milhar(w.get("mensagens", 0))),
+        Checagem(f"{p}fotos, vídeos, áudios e documentos" if com_nome else
+                 "Fotos, vídeos, áudios e documentos do WhatsApp",
+                 Status.OK if w.get("midias") else Status.AVISO,
+                 f"{_milhar(w.get('midias', 0))} arquivos · {formatar_bytes(w.get('bytes_midia', 0))}"),
+        Checagem(f"{p}banco de conversas" if com_nome else "Banco de conversas",
+                 Status.OK if w.get("banco_integro") else Status.BLOQUEIO,
+                 "Íntegro (teste de integridade do SQLite)" if w.get("banco_integro") else "Com problema"),
+        _checagem_anexos(w, f"{p}anexos citados nas conversas" if com_nome else "Anexos citados nas conversas"),
+        Checagem(f"{p}teste de mídias" if com_nome else "Teste de mídias",
+                 Status.OK if conferidas and not falhas else (Status.BLOQUEIO if falhas else Status.AVISO),
+                 f"{conferidas} mídias sorteadas foram decifradas por inteiro e conferidas"
+                 + (f"; {falhas} falharam" if falhas else "")),
+    ]
+
+
+def _itens_resultado(nome: str, r: dict) -> list[Checagem]:
+    estado = r.get("estado")
+    if estado == "instalado":
+        itens = [Checagem(f"{nome} no iPhone novo", Status.OK,
+                          "Instalado" + (f" (versão {r['versao']})" if r.get("versao") else "") + ".")]
+        prop = r.get("proporcao")
+        if prop is not None:
+            texto = (f"{formatar_bytes(r.get('dados'))} no iPhone novo; no iPhone antigo eram "
+                     f"{formatar_bytes(r.get('esperado'))} (app + dados).")
+            if prop >= 0.8:
+                itens.append(Checagem(f"Dados do {nome}", Status.OK, texto))
+            else:
+                itens.append(Checagem(f"Dados do {nome}", Status.AVISO, texto,
+                                      f"Os dados podem ainda estar sendo organizados pelo iPhone. Abra o {nome}, "
+                                      "espere alguns minutos e confira de novo. Se continuar bem menor, peça ajuda "
+                                      "antes de apagar o backup."))
+        return itens
+    if estado == "instalando":
+        return [Checagem(f"{nome} no iPhone novo", Status.AVISO, "Ainda está sendo baixado da App Store.",
+                         "Deixe o iPhone no Wi-Fi e na tomada, espere o ícone terminar de baixar e confira de "
+                         f"novo. Não apague nem reinstale o {nome}.")]
+    return [Checagem(f"{nome} no iPhone novo", Status.BLOQUEIO, f"Não encontrei o {nome}.",
+                     "Confira se você entrou com o Apple ID no iPhone novo (Ajustes > [seu nome]) e se ele está no "
+                     "Wi-Fi. Os apps são baixados de novo depois da restauração. Se não aparecer, peça ajuda; o "
+                     "backup e o iPhone antigo continuam intactos.")]
 
 
 def _gerar_senha() -> str:
@@ -664,6 +718,8 @@ class App(ctk.CTk):
         self.quadro_aparelhos = ctk.CTkFrame(c, fg_color="transparent")
         self.quadro_aparelhos.pack(fill="x", padx=0, pady=(0, 10))
         self.cartao_checagens = None
+        # WhatsApps escolhidos para migrar e conferir; None = todos os instalados.
+        self._escolhidos_ui = list(e.escolhidos) if e.escolhidos else None
         self._botao_continuar("Continuar →", lambda: self.mostrar("senha"), habilitado=False)
         if self.migracao.aparelhos:
             self._desenhar_aparelhos(self.migracao.aparelhos)
@@ -749,8 +805,9 @@ class App(ctk.CTk):
         if not pasta.is_absolute():
             messagebox.showwarning("Pasta", "Informe o caminho completo da pasta do backup.", parent=self)
             return
-        self.em_segundo_plano(lambda: self.migracao.conferir(origem, destino, pasta), self._mostrar_conferencia,
-                              status="Conferindo aparelhos, versões e espaço…")
+        escolhidos = self._escolhidos_ui
+        self.em_segundo_plano(lambda: self.migracao.conferir(origem, destino, pasta, escolhidos),
+                              self._mostrar_conferencia, status="Conferindo aparelhos, versões e espaço…")
 
     def _mostrar_conferencia(self, checagens: list[Checagem]):
         if self.tela_atual != "conexao":
@@ -764,9 +821,40 @@ class App(ctk.CTk):
         else:
             self._texto(self.cartao_checagens, "Resolva os itens em vermelho e clique em Conferir tudo de novo.",
                         cor=VERMELHO, negrito=True)
+        self._escolha_whatsapps(self.cartao_checagens)
         self._lista_checagens(self.cartao_checagens, checagens)
         self._botao_continuar("Continuar →", lambda: self.mostrar("senha"), habilitado=ok)
         self.after(100, lambda: self.corpo._parent_canvas.yview_moveto(1.0))
+
+    def _escolha_whatsapps(self, pai):
+        """Com WhatsApp e WhatsApp Business no iPhone antigo, a pessoa escolhe quais migrar e conferir."""
+        encontrados = [w.bundle for w in getattr(self.migracao, "whatsapps_encontrados", [])]
+        if len(encontrados) < 2:
+            return
+        quadro = ctk.CTkFrame(pai, fg_color="transparent")
+        quadro.pack(fill="x", padx=18, pady=(4, 8))
+        ctk.CTkLabel(quadro, text="Este iPhone tem o WhatsApp e o WhatsApp Business. Quais você quer migrar?",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(anchor="w")
+        atual = self._escolhidos_ui or encontrados
+        chave_atual = "ambos" if set(atual) == set(encontrados) else atual[0]
+        self.var_escolha = ctk.StringVar(value=chave_atual)
+        opcoes = [("ambos", "Os dois (recomendado)")] + [(b, f"Só o {nome_whatsapp(b)}") for b in WHATSAPP_BUNDLES
+                                                         if b in encontrados]
+        linha = ctk.CTkFrame(quadro, fg_color="transparent")
+        linha.pack(anchor="w", pady=(6, 2))
+        for valor, rotulo in opcoes:
+            ctk.CTkRadioButton(linha, text=rotulo, value=valor, variable=self.var_escolha,
+                               command=self._mudou_escolha).pack(side="left", padx=(0, 18))
+        self._texto(quadro, "Os escolhidos precisam estar íntegros no backup e são conferidos no iPhone novo. O "
+                            "backup e a restauração são sempre do iPhone inteiro: o que não for escolhido também "
+                            "vai para o iPhone novo, só não é conferido. Se não quiser ele no novo, apague o app lá "
+                            "depois.", cor=CINZA, pady=(2, 0))
+
+    def _mudou_escolha(self):
+        encontrados = [w.bundle for w in self.migracao.whatsapps_encontrados]
+        valor = self.var_escolha.get()
+        self._escolhidos_ui = encontrados if valor == "ambos" else [valor]
+        self._conferir()
 
     # --- senha
 
@@ -844,7 +932,7 @@ class App(ctk.CTk):
         self._cabecalho("Backup do iPhone antigo",
                         "O PC copia todo o conteúdo do iPhone antigo, inclusive o WhatsApp. O iPhone antigo não é "
                         "alterado.")
-        tamanho = (e.whatsapp or {}).get("tamanho")
+        tamanho = sum((w.get("tamanho") or 0) for w in (e.whatsapps or ([e.whatsapp] if e.whatsapp else [])))
         origem = Aparelho.de_dict(e.origem) if e.origem else None
         estimado = max(x for x in (tamanho or 0, (origem.usado if origem else 0) or 0))
         anterior = self.migracao.backup_anterior_completo()
@@ -955,7 +1043,7 @@ class App(ctk.CTk):
     def _preparar_verificacao(self):
         m = self.migracao
         c = self._cartao()
-        precisa_senha = m.estado.criptografia_ja_ativa and not m.senha and not m.estado.simulacao
+        precisa_senha = m.estado.criptografia_ja_ativa and not m.senha
         if precisa_senha:
             self._texto(c, "Digite a senha do backup para que ele possa ser aberto:", pady=(14, 4))
             var = ctk.StringVar()
@@ -1006,19 +1094,14 @@ class App(ctk.CTk):
     def _desenhar_relatorio(self, rel: RelatorioBackup):
         c = self._cartao("Backup aprovado" if rel.ok else "Backup reprovado", cor_borda=VERDE if rel.ok else VERMELHO)
         if rel.ok:
-            self._texto(c, "O backup está completo e as conversas do WhatsApp estão íntegras.", cor=VERDE, negrito=True)
-        itens = [
-            Checagem("Conversas do WhatsApp", Status.OK if rel.conversas else Status.AVISO, f"{rel.conversas:,}".replace(",", ".")),
-            Checagem("Mensagens", Status.OK if rel.mensagens else Status.BLOQUEIO, f"{rel.mensagens:,}".replace(",", ".")),
-            Checagem("Fotos, vídeos, áudios e documentos do WhatsApp", Status.OK if rel.midias else Status.AVISO,
-                     f"{rel.midias:,} arquivos · {formatar_bytes(rel.bytes_midia)}".replace(",", ".")),
-            Checagem("Banco de conversas", Status.OK if rel.banco_integro else Status.BLOQUEIO,
-                     "Íntegro (teste de integridade do SQLite)" if rel.banco_integro else "Com problema"),
-            _checagem_anexos(rel),
-            Checagem("Teste de mídias", Status.OK if rel.amostra_conferida and not rel.amostra_falhas else
-                     (Status.BLOQUEIO if rel.amostra_falhas else Status.AVISO),
-                     f"{rel.amostra_conferida} mídias sorteadas foram decifradas por inteiro e conferidas"
-                     + (f"; {rel.amostra_falhas} falharam" if rel.amostra_falhas else "")),
+            nomes = " e ".join(w["nome"] for w in rel.whatsapps) or "WhatsApp"
+            self._texto(c, f"O backup está completo e as conversas do {nomes} estão íntegras.", cor=VERDE,
+                        negrito=True)
+        apps = rel.whatsapps or []
+        itens = []
+        for w in apps:
+            itens += _itens_whatsapp(w, com_nome=len(apps) > 1 or w["bundle"] != "net.whatsapp.WhatsApp")
+        itens += [
             Checagem("Arquivos no backup", Status.OK if not rel.arquivos_faltando else Status.BLOQUEIO,
                      f"{rel.arquivos:,} arquivos · {formatar_bytes(rel.bytes_total)}".replace(",", ".")
                      + (f" · {rel.arquivos_faltando} faltando" if rel.arquivos_faltando else "")),
@@ -1176,20 +1259,23 @@ class App(ctk.CTk):
         ])
         c = self._cartao("Conferir o WhatsApp no iPhone novo", cor_borda=AZUL)
         self._texto(c, "Quando o iPhone novo terminar de reiniciar, desbloqueie-o, conecte pelo cabo e clique abaixo. "
-                       "O programa confere se o WhatsApp voltou e se trouxe os dados do backup.", cor=CINZA)
+                       "O programa confere se cada WhatsApp escolhido voltou e se trouxe os dados do backup.",
+                    cor=CINZA)
         ctk.CTkButton(c, text="🔍  Conferir o WhatsApp no iPhone novo", width=300,
                       command=self._conferir_resultado).pack(anchor="w", padx=18, pady=(6, 6))
         self.quadro_resultado = ctk.CTkFrame(c, fg_color="transparent")
         self.quadro_resultado.pack(fill="x")
         if e.resultado:
             self._desenhar_resultado(e.resultado)
-        self._texto(c, "Depois de abrir o WhatsApp e confirmar o número, confira e marque:", negrito=True,
+        self._texto(c, "Depois de abrir cada WhatsApp escolhido e confirmar o número, confira e marque:",
+                    negrito=True,
                     pady=(10, 2))
         self.var_conversas = ctk.BooleanVar(value=bool(e.confirmado_em))
         self.var_midias = ctk.BooleanVar(value=bool(e.confirmado_em))
-        ctk.CTkCheckBox(c, text="As conversas antigas aparecem (role até as mais antigas de uma conversa longa).",
-                        variable=self.var_conversas).pack(anchor="w", padx=18, pady=4)
-        ctk.CTkCheckBox(c, text="As fotos, vídeos e áudios antigos abrem.",
+        nomes = " e no ".join(nome_whatsapp(b) for b in e.bundles_escolhidos) or "WhatsApp"
+        ctk.CTkCheckBox(c, text=f"No {nomes}: as conversas antigas aparecem (role até as mais antigas de uma "
+                                "conversa longa).", variable=self.var_conversas).pack(anchor="w", padx=18, pady=4)
+        ctk.CTkCheckBox(c, text=f"No {nomes}: as fotos, vídeos e áudios antigos abrem.",
                         variable=self.var_midias).pack(anchor="w", padx=18, pady=4)
         linha = ctk.CTkFrame(c, fg_color="transparent")
         linha.pack(anchor="w", padx=18, pady=(4, 14))
@@ -1215,35 +1301,17 @@ class App(ctk.CTk):
         self.em_segundo_plano(self.migracao.conferir_resultado, self._desenhar_resultado,
                               status="Conferindo o WhatsApp no iPhone novo…")
 
-    def _desenhar_resultado(self, r: dict):
+    def _desenhar_resultado(self, resultado: dict):
         if self.tela_atual != "concluido":
             return
         for w in self.quadro_resultado.winfo_children():
             w.destroy()
-        estado = r.get("estado")
-        if estado == "instalado":
-            itens = [Checagem("WhatsApp no iPhone novo", Status.OK,
-                              "Instalado" + (f" (versão {r['versao']})" if r.get("versao") else "") + ".")]
-            prop = r.get("proporcao")
-            if prop is not None:
-                texto = (f"{formatar_bytes(r.get('dados'))} no iPhone novo; no iPhone antigo eram "
-                         f"{formatar_bytes(r.get('esperado'))} (app + dados).")
-                if prop >= 0.8:
-                    itens.append(Checagem("Dados do WhatsApp", Status.OK, texto))
-                else:
-                    itens.append(Checagem("Dados do WhatsApp", Status.AVISO, texto,
-                                          "Os dados podem ainda estar sendo organizados pelo iPhone. Abra o "
-                                          "WhatsApp, espere alguns minutos e confira de novo. Se continuar "
-                                          "bem menor, peça ajuda antes de apagar o backup."))
-        elif estado == "instalando":
-            itens = [Checagem("WhatsApp no iPhone novo", Status.AVISO, "Ainda está sendo baixado da App Store.",
-                              "Deixe o iPhone no Wi-Fi e na tomada, espere o ícone terminar de baixar e confira de "
-                              "novo. Não apague nem reinstale o WhatsApp.")]
-        else:
-            itens = [Checagem("WhatsApp no iPhone novo", Status.BLOQUEIO, "Não encontrei o WhatsApp.",
-                              "Confira se você entrou com o Apple ID no iPhone novo (Ajustes > [seu nome]) e se "
-                              "ele está no Wi-Fi. Os apps são baixados de novo depois da restauração. Se o "
-                              "WhatsApp não aparecer, peça ajuda; o backup e o iPhone antigo continuam intactos.")]
+        e = self.migracao.estado
+        if "estado" in resultado:  # formato da 1.1.0: um WhatsApp só
+            resultado = {(e.bundles_escolhidos or ["net.whatsapp.WhatsApp"])[0]: resultado}
+        itens = []
+        for bundle, r in resultado.items():
+            itens += _itens_resultado(nome_whatsapp(bundle), r)
         self._lista_checagens(self.quadro_resultado, itens)
 
     def _confirmar_resultado(self):
@@ -1272,10 +1340,14 @@ class App(ctk.CTk):
         linhas.append(f"Pasta do backup: {e.pasta_backup}")
         rel = self.migracao.relatorio
         if rel:
-            linhas += ["", "Verificação do backup:", f"  Conversas: {rel.conversas}", f"  Mensagens: {rel.mensagens}",
-                       f"  Mídias: {rel.midias} ({formatar_bytes(rel.bytes_midia)})",
+            linhas += ["", "Verificação do backup:",
                        f"  Arquivos: {rel.arquivos} ({formatar_bytes(rel.bytes_total)})",
                        f"  Impressão digital: {rel.impressao_digital}"]
+            for w in rel.whatsapps:
+                linhas += [f"  {w['nome']}: {w['conversas']} conversas, {w['mensagens']} mensagens, "
+                           f"{w['midias']} mídias ({formatar_bytes(w['bytes_midia'])}), "
+                           f"anexos {w['anexos_presentes']}/{w['anexos_referenciados']}, "
+                           f"amostra {w['amostra_conferida']} decifradas, {w['amostra_falhas']} falhas"]
         linhas += ["", "Histórico:"] + [f"  {h}" for h in e.historico]
         Path(destino).write_text("\n".join(linhas), encoding="utf-8")
 
