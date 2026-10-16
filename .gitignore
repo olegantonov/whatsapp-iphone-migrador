@@ -7,3 +7,5 @@ dist/
 .pytest_cache/
 MigradorWhatsApp-Backup/
 assets/legal/
+servidor/node_modules/
+servidor/.wrangler/

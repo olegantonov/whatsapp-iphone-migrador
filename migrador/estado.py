@@ -3,6 +3,7 @@ queda de energia ou atualização automática."""
 import json
 import logging
 import os
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +41,14 @@ class Estado:
     backup_concluido_em: str | None = None
     relatorio: dict | None = None
     restaurado_em: str | None = None
+    # Conferência do WhatsApp no iPhone novo depois da restauração.
+    resultado: dict | None = None
+    # UDID do iPhone novo aprovado na conferência da etapa "Preparar o iPhone novo".
+    destino_conferido: str | None = None
+    confirmado_em: str | None = None
     historico: list[str] = field(default_factory=list)
+    # Número aleatório desta migração, para juntar os eventos anônimos de uma mesma tentativa.
+    sessao: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     def anotar(self, texto: str) -> None:
         self.historico.append(f"{datetime.now():%d/%m/%Y %H:%M:%S} — {texto}")

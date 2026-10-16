@@ -28,6 +28,7 @@ from pymobiledevice3.services.mobilebackup2 import Mobilebackup2Service
 from migrador.dispositivos.base import (
     PRECISA_CONFIAR,
     PRECISA_DESBLOQUEAR,
+    Aviso,
     Cancelado,
     ErroAparelho,
     Progresso,
@@ -141,6 +142,8 @@ class BackendReal:
             ap.buscar_ativo = bool(buscar) if buscar is not None else None
         finally:
             await ld.close()
+        log.info("aparelho %s: %s iOS %s, capacidade %s, livre %s, bateria %s%%, Buscar %s",
+                 udid, ap.tipo, ap.ios, ap.capacidade, ap.livre, ap.bateria, ap.buscar_ativo)
         return ap
 
     def whatsapp(self, udid: str) -> InfoWhatsApp | None:
@@ -161,6 +164,36 @@ class BackendReal:
                 tamanho = (info.get("StaticDiskUsage") or 0) + (info.get("DynamicDiskUsage") or 0)
                 return InfoWhatsApp(bundle=bundle, tamanho=tamanho or None)
         return None
+
+    def whatsapp_no_destino(self, udid: str) -> dict:
+        """Depois da restauração o iPhone reinstala os apps pela App Store: enquanto baixa, o
+        WhatsApp aparece só como "placeholder" (ícone esperando)."""
+        async def f():
+            ld = await _conectar(udid)
+            try:
+                ip = InstallationProxyService(lockdown=ld)
+                instalados = await ip.get_apps(application_type="User", calculate_sizes=True,
+                                               bundle_identifiers=list(WHATSAPP_BUNDLES))
+                todos = await ip.get_apps(application_type="Any", calculate_sizes=False,
+                                          bundle_identifiers=list(WHATSAPP_BUNDLES), show_placeholders=True)
+            finally:
+                await ld.close()
+            for bundle in WHATSAPP_BUNDLES:
+                if bundle in instalados:
+                    info = instalados[bundle]
+                    # Mesma medida usada no iPhone antigo (app + dados), para comparar igual com igual.
+                    dados = (info.get("StaticDiskUsage") or 0) + (info.get("DynamicDiskUsage") or 0)
+                    return {"estado": "instalado", "bundle": bundle, "versao": info.get("CFBundleShortVersionString"),
+                            "dados": dados or None}
+            for bundle in WHATSAPP_BUNDLES:
+                if bundle in todos:
+                    return {"estado": "instalando", "bundle": bundle}
+            return {"estado": "ausente"}
+        return _rodar(f())
+
+    def ler_sistema(self):
+        from migrador import sistema
+        return sistema.ler(self.servico_apple_ok())
 
     def criptografia_ativa(self, udid: str) -> bool:
         async def f():
@@ -193,11 +226,13 @@ class BackendReal:
                 await ld.close()
         _rodar(f())
 
-    def fazer_backup(self, udid: str, pasta: Path, progresso: Progresso, cancelar: threading.Event) -> None:
+    def fazer_backup(self, udid: str, pasta: Path, progresso: Progresso, cancelar: threading.Event,
+                     aviso: Aviso | None = None) -> None:
         async def f():
             ld = await _conectar(udid)
             try:
                 async with Mobilebackup2Service(ld) as mb:
+                    _repassar_avisos(mb, aviso)
                     # full=False: se já houver um backup parcial/anterior na pasta, é incremental
                     # e aproveita o que já foi copiado.
                     tarefa = asyncio.create_task(
@@ -241,6 +276,35 @@ class BackendReal:
             finally:
                 await ld.close()
         _rodar(f())
+
+
+# Avisos que o iPhone manda durante o backup e que pedem ação da pessoa.
+AVISOS_BACKUP = {
+    "com.apple.LocalAuthentication.ui.presented":
+        "O iPhone antigo está pedindo o código de desbloqueio: digite-o no iPhone para o backup continuar.",
+    "com.apple.LocalAuthentication.ui.dismissed": "",
+    "com.apple.itunes-client.syncCancelRequest": "O backup foi cancelado no próprio iPhone.",
+}
+
+
+def _repassar_avisos(mb: Mobilebackup2Service, aviso: Aviso | None) -> None:
+    """O pymobiledevice3 só registra estes avisos no log; aqui eles também vão para a tela."""
+    original = getattr(mb, "_log_backup_notification", None)
+    if original is None:
+        log.warning("esta versão do pymobiledevice3 não expõe os avisos do backup")
+        return
+
+    def repassar(evento):
+        original(evento)
+        nome = evento.get("Name") if isinstance(evento, dict) else None
+        log.info("aviso do iPhone durante o backup: %s", nome)
+        if aviso and nome in AVISOS_BACKUP:
+            try:
+                aviso(AVISOS_BACKUP[nome])
+            except Exception:
+                log.exception("falha ao mostrar aviso")
+
+    mb._log_backup_notification = repassar
 
 
 async def _valor(ld, dominio: str, chave: str | None = None):

@@ -39,7 +39,7 @@ A publicação de versões (aumentar `migrador/versao.py` na `main`) fica com os
 
 - **Nunca arriscar os dados:** o iPhone antigo não é alterado, e o iPhone novo só é tocado depois do backup verificado.
 - **Dizer a verdade ao usuário:** se algo não é garantido, o programa diz isso.
-- **Privacidade:** nenhum dado dos aparelhos sai do PC do usuário.
+- **Privacidade:** nenhum conteúdo dos aparelhos sai do PC do usuário. Eventos anônimos só com consentimento; nunca envie nomes, números de série, telefones (os caminhos de anexos do WhatsApp têm números de contatos) ou senhas. Passe todo texto livre por `diagnostico.anonimizar()`.
 
 ## Licença das contribuições
 

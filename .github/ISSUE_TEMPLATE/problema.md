@@ -15,4 +15,6 @@ labels: problema
 
 **O que aconteceu?** Copie a mensagem de erro, se houver.
 
-**Registro (log):** no programa, clique em "Abrir registros" e anexe o arquivo mais recente. Confira o conteúdo antes de enviar: ele não tem senhas nem conversas, mas mostra nomes dos aparelhos e caminhos de pastas.
+**Diagnóstico:** no programa (versão 1.1.0 ou mais nova), clique em "Enviar diagnóstico ao suporte" no canto inferior esquerdo e informe aqui o protocolo que aparecer (ou use "Salvar arquivo" e anexe o .zip). Ele traz os registros sem senhas, sem conversas e sem os nomes e números de série dos iPhones.
+
+Em versões anteriores, clique em "Abrir registros" e anexe o arquivo mais recente. Confira o conteúdo antes de enviar: ele não tem senhas nem conversas, mas mostra nomes dos aparelhos e caminhos de pastas.

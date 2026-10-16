@@ -143,6 +143,15 @@ class RelatorioBackup:
     bytes_midia: int = 0
     banco_integro: bool = False
     impressao_digital: str = ""
+    # Versão 2 em diante (1.1.0): inventário de todos os arquivos, anexos cruzados e amostra decifrada.
+    versao_conferencia: int = 1
+    inventario: str = ""
+    inventario_arquivos: int = 0
+    anexos_referenciados: int = 0
+    anexos_presentes: int = 0
+    amostra_conferida: int = 0
+    amostra_falhas: int = 0
+    bytes_whatsapp: int = 0
 
     def para_dict(self) -> dict:
         return asdict(self)

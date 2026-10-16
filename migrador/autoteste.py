@@ -39,12 +39,19 @@ def rodar(saida: Path | None = None) -> bool:
         linhas.append("backup: ok")
         rel = m.verificar(lambda p, msg: None)
         assert rel.ok, rel.problemas
-        linhas.append(f"verificação: ok ({rel.mensagens} mensagens, {rel.midias} mídias)")
+        # O backup simulado é criptografado de verdade: isto prova que a decifragem está no pacote.
+        assert rel.criptografado and rel.amostra_conferida and not rel.amostra_falhas
+        assert rel.anexos_referenciados == rel.anexos_presentes > 0
+        linhas.append(f"verificação: ok ({rel.mensagens} mensagens, {rel.midias} mídias, criptografado, "
+                      f"{rel.amostra_conferida} mídias decifradas, {rel.anexos_presentes} anexos cruzados)")
         _, c = m.conferir_destino()
         assert not tem_bloqueio(c), [x.detalhe for x in c if x.status.value == "bloqueio"]
         m.restaurar(lambda p: None)
         assert m.estado.etapa == "concluido"
         linhas.append("restauração: ok")
+        m.conferir_resultado()
+        assert m.conferir_resultado()["estado"] == "instalado"
+        linhas.append("conferência no iPhone novo: ok")
         ok = True
     except Exception:
         linhas.append(traceback.format_exc())

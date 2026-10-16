@@ -12,6 +12,8 @@ URL_CONTRIBUIR = f"{URL_REPOSITORIO}/blob/main/CONTRIBUTING.md"
 NOME_EXECUTAVEL = "MigradorWhatsApp.exe"
 NOME_PACOTE_RELEASE = "MigradorWhatsApp-win64.zip"
 NOME_PASTA_BACKUP = "MigradorWhatsApp-Backup"
+# Servidor do projeto que recebe os dados anônimos e os diagnósticos (código em servidor/).
+URL_SERVIDOR_LOGS = os.environ.get("MIGRADOR_SERVIDOR_LOGS", "https://migrador-whatsapp-logs.dagumasi.workers.dev")
 
 # Folga exigida além do tamanho estimado do backup, no PC e no iPhone de destino.
 FOLGA_PC_BYTES = 10 * 1024**3

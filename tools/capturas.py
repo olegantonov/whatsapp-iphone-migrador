@@ -10,7 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PIL import ImageGrab  # noqa: E402
 
+from migrador import telemetria  # noqa: E402
 from migrador.interface import App  # noqa: E402
+
+telemetria.definir_consentimento(False)  # sem a pergunta inicial nas capturas
 
 saida = Path(sys.argv[1])
 saida.mkdir(parents=True, exist_ok=True)
@@ -65,6 +68,7 @@ seq(
     (foto("01-inicio"), 800),
     (comecar, 800),
     (foto("02-preparacao"), 500),
+    (lambda: app.corpo._parent_canvas.yview_moveto(0.0), 300),
     (prep, 2500),
     (lambda: app.var_pasta.set(pasta), 300),
     (lambda: app._conferir(), 2500),
@@ -81,7 +85,11 @@ seq(
     (lambda: app._conferir_destino(), 2500),
     (lambda: app.corpo._parent_canvas.yview_moveto(1.0), 500),
     (foto("07-destino"), 500),
+    (lambda: app.migracao.restaurar(lambda p: None), 1500),
     (lambda: app.mostrar("concluido"), 1000),
+    (lambda: app._conferir_resultado(), 1000),
+    (lambda: app._conferir_resultado(), 1500),
+    (lambda: app.corpo._parent_canvas.yview_moveto(0.0), 300),
     (foto("09-concluido"), 500),
     (lambda: app._saiba_mais(), 1500),
     (foto_janela("10-saiba-mais"), 500),

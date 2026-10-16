@@ -1,4 +1,6 @@
 import logging
+import sys
+import threading
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -22,7 +24,33 @@ def iniciar() -> Path:
     raiz = logging.getLogger()
     raiz.setLevel(logging.INFO)
     raiz.addHandler(handler)
+    _capturar_excecoes()
     return _arquivo
+
+
+def _capturar_excecoes() -> None:
+    """No .exe sem console, uma exceção não tratada sumiria sem deixar rastro."""
+    log = logging.getLogger("migrador.excecao")
+
+    def no_programa(tipo, valor, tb):
+        log.critical("exceção não tratada", exc_info=(tipo, valor, tb))
+        _telemetria(tipo, valor, tb, "programa")
+
+    def na_thread(args):
+        log.critical("exceção não tratada na thread %s", getattr(args.thread, "name", "?"),
+                     exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+        _telemetria(args.exc_type, args.exc_value, args.exc_traceback, "thread")
+
+    sys.excepthook = no_programa
+    threading.excepthook = na_thread
+
+
+def _telemetria(tipo, valor, tb, onde: str) -> None:
+    try:
+        from migrador import telemetria
+        telemetria.registrar_excecao(tipo, valor, tb, onde)
+    except Exception:
+        pass
 
 
 def arquivo_atual() -> Path | None:

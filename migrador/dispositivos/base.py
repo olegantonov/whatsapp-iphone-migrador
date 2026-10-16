@@ -7,6 +7,8 @@ from migrador.modelos import Aparelho, InfoWhatsApp
 
 # Recebe a porcentagem (0 a 100).
 Progresso = Callable[[float], None]
+# Recebe um texto para mostrar na tela (vazio = o aviso anterior não vale mais).
+Aviso = Callable[[str], None]
 
 
 class ErroAparelho(Exception):
@@ -42,6 +44,11 @@ class Backend(Protocol):
 
     def validar_senha(self, udid: str, senha: str) -> None: ...
 
-    def fazer_backup(self, udid: str, pasta: Path, progresso: Progresso, cancelar: threading.Event) -> None: ...
+    def fazer_backup(self, udid: str, pasta: Path, progresso: Progresso, cancelar: threading.Event,
+                     aviso: Aviso | None = None) -> None: ...
 
     def restaurar(self, udid_destino: str, pasta: Path, udid_origem: str, senha: str, progresso: Progresso) -> None: ...
+
+    def whatsapp_no_destino(self, udid: str) -> dict: ...
+
+    def ler_sistema(self): ...

@@ -2,19 +2,23 @@
 pré-condições e salva o progresso antes e depois de agir."""
 import logging
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from migrador import checagens, disco, estado as est, versoes_ios
+from migrador import checagens, disco, estado as est, sistema, telemetria, versoes_ios
 from migrador.dispositivos import criar
-from migrador.dispositivos.base import Backend, ErroAparelho
+from migrador.dispositivos.base import Aviso, Backend, Cancelado, ErroAparelho
 from migrador.modelos import Aparelho, Checagem, InfoWhatsApp, RelatorioBackup, Status, tem_bloqueio
+from migrador.config import pasta_dados
 from migrador.verificacao import (
     SenhaIncorreta, backup_completo_existe, conferir_antes_de_restaurar, verificar_backup,
 )
 
 log = logging.getLogger(__name__)
+
+GB = 1024**3
 
 
 class Migracao:
@@ -41,12 +45,42 @@ class Migracao:
     def salvar(self) -> None:
         est.salvar(self.estado)
 
+    def _evento(self, tipo: str, **dados) -> None:
+        e = self.estado
+        telemetria.registrar(tipo, etapa=e.etapa, sessao=e.sessao, simulacao=e.simulacao, **dados)
+
+    def _evento_falha(self, tipo: str, erro: BaseException, acomp: "_Acompanhamento") -> None:
+        if isinstance(erro, Cancelado):
+            tipo = tipo.replace("_falha", "_cancelado")
+        self._evento(tipo, **_descrever_erro(erro), minutos=acomp.minutos(), porcentagem=acomp.ultimo)
+
     # --- versões ----------------------------------------------------------------------
 
     def ultimas_versoes(self) -> dict[str, str] | None:
         if hasattr(self.backend, "ultimas_versoes"):
             return self.backend.ultimas_versoes()
         return versoes_ios.buscar_ultimas()
+
+    # --- sistema do PC -----------------------------------------------------------------
+
+    def verificar_sistema(self, momento: str = "preparacao") -> list[Checagem]:
+        """Verificações do PC (app e serviço da Apple, confiança, energia, tampa, concorrentes)."""
+        s = self.backend.ler_sistema()
+        self._sistema = s
+        c = checagens.checar_sistema(s, simulado=self.backend.simulado, momento=momento)
+        if self.backend.simulado:
+            _rebaixar_na_simulacao(c)
+        _registrar_checagens(f"sistema ({momento})", c)
+        self._evento("sistema", momento=momento, liberada=not tem_bloqueio(c), pendencias=_pendencias(c),
+                     **{k: v for k, v in s.para_log().items() if k not in ("usbmux_ok",)})
+        return c
+
+    def _exigir_pc_pronto(self, momento: str) -> None:
+        """Logo antes de backup/restauração: energia, serviço e concorrentes podem ter mudado."""
+        bloqueios = [ch for ch in self.verificar_sistema(momento) if ch.status == Status.BLOQUEIO]
+        if bloqueios:
+            ch = bloqueios[0]
+            raise ErroAparelho(f"{ch.titulo}: {ch.detalhe}", ch.como_resolver)
 
     # --- conexão ----------------------------------------------------------------------
 
@@ -65,17 +99,21 @@ class Migracao:
         necessario = checagens.tamanho_estimado_backup(origem, whatsapp)
         # Um backup anterior na mesma pasta é reaproveitado (incremental) e não conta como espaço a ocupar.
         ja_ocupado = _tamanho_pasta(pasta / origem.udid)
-        pc = checagens.checar_pc(
-            self.backend.servico_apple_ok(), pasta, disco.espaco_livre(pasta) + ja_ocupado,
-            disco.sistema_arquivos(pasta), necessario,
-        )
+        pc = checagens.checar_confianca([origem, destino])
+        pc += self.verificar_sistema("conexao")
+        pc += checagens.checar_pc(None, pasta, disco.espaco_livre(pasta) + ja_ocupado,
+                                  disco.sistema_arquivos(pasta), necessario)
+        pc += checagens.checar_pasta(pasta, sistema.pasta_sincronizada(pasta), sistema.pasta_gravavel(pasta),
+                                     sistema.disco_removivel(pasta))
         if self.backend.simulado:
             # O backup simulado ocupa poucos MB; mostra a regra real sem travar o treino.
-            for ch in pc:
-                if ch.status == Status.BLOQUEIO and ch.titulo == "Espaço no PC":
-                    ch.status = Status.AVISO
-                    ch.detalhe = "[Simulação: numa migração real, isto impediria continuar.] " + ch.detalhe
+            _rebaixar_na_simulacao(pc)
         c += pc
+        _registrar_checagens("conferência", c)
+        self._evento("conferencia", liberada=not tem_bloqueio(c), pendencias=_pendencias(c),
+                     origem=_resumo_aparelho(origem), destino=_resumo_aparelho(destino),
+                     whatsapp=whatsapp.bundle if whatsapp else None,
+                     whatsapp_gb=_gb(whatsapp.tamanho if whatsapp else None), estimado_gb=_gb(necessario))
         if not tem_bloqueio(c):
             e = self.estado
             e.origem, e.destino = origem.para_dict(), destino.para_dict()
@@ -98,13 +136,19 @@ class Migracao:
         if len(senha) < 4:
             raise ErroAparelho("A senha precisa ter pelo menos 4 caracteres.")
         udid = self.estado.origem["udid"]
-        if self.estado.criptografia_ja_ativa:
-            self.backend.validar_senha(udid, senha)
-            self.estado.anotar("Senha de backup existente conferida")
-        else:
-            self.backend.ativar_criptografia(udid, senha)
-            self.estado.criptografia_ja_ativa = True
-            self.estado.anotar("Backup com senha ativado no iPhone antigo")
+        ja_ativa = self.estado.criptografia_ja_ativa
+        try:
+            if ja_ativa:
+                self.backend.validar_senha(udid, senha)
+                self.estado.anotar("Senha de backup existente conferida")
+            else:
+                self.backend.ativar_criptografia(udid, senha)
+                self.estado.criptografia_ja_ativa = True
+                self.estado.anotar("Backup com senha ativado no iPhone antigo")
+        except Exception as erro:
+            self._evento("senha_falha", ja_ativa=ja_ativa, **_descrever_erro(erro))
+            raise
+        self._evento("senha_ok", ja_ativa=ja_ativa)
         self.senha = senha
         if guardar and self.estado.guardar_senha(senha):
             self.estado.anotar("Senha guardada protegida pelo Windows")
@@ -116,17 +160,28 @@ class Migracao:
     def backup_anterior_completo(self) -> bool:
         return backup_completo_existe(self.estado.pasta_aparelho)
 
-    def fazer_backup(self, progresso: Callable[[float], None], cancelar: threading.Event) -> None:
+    def fazer_backup(self, progresso: Callable[[float], None], cancelar: threading.Event,
+                     aviso: Aviso | None = None) -> None:
         e = self.estado
         if not e.origem or not e.pasta_backup:
             raise ErroAparelho("Faça a conferência dos aparelhos antes do backup.")
         presentes = {a.udid for a in self.backend.listar() if not a.erro}
         if e.origem["udid"] not in presentes:
             raise ErroAparelho("O iPhone antigo não está conectado.", "Conecte e desbloqueie o iPhone antigo.")
+        self._exigir_pc_pronto("backup")
         e.anotar("Backup iniciado")
         e.relatorio = None
         self.salvar()
-        self.backend.fazer_backup(e.origem["udid"], Path(e.pasta_backup), progresso, cancelar)
+        incremental = self.backup_anterior_completo()
+        self._evento("backup_inicio", incremental=incremental)
+        acomp = _Acompanhamento(progresso, "backup")
+        try:
+            self.backend.fazer_backup(e.origem["udid"], Path(e.pasta_backup), acomp, cancelar, aviso)
+        except BaseException as erro:
+            self._evento_falha("backup_falha", erro, acomp)
+            raise
+        self._evento("backup_ok", incremental=incremental, minutos=acomp.minutos(),
+                     pasta_gb=_gb(_tamanho_pasta(e.pasta_aparelho)))
         e.backup_concluido_em = datetime.now().isoformat(timespec="seconds")
         e.anotar("Backup concluído")
         e.avancar_para("verificacao")
@@ -140,18 +195,34 @@ class Migracao:
         if not pasta or not pasta.exists():
             raise ErroAparelho("Não encontrei a pasta do backup.", f"Esperada em: {pasta}")
         try:
-            rel = verificar_backup(pasta, self.senha or "", progresso)
+            rel = verificar_backup(pasta, self.senha or "", progresso,
+                                   exigir_criptografia=e.criptografia_ja_ativa,
+                                   inventario_destino=self._arquivo_inventario())
         except SenhaIncorreta:
+            self._evento("verificacao_falha", erro="SenhaIncorreta")
             raise ErroAparelho("A senha não abre este backup.", "Digite a senha que foi usada no backup.")
-        if rel.criptografado is False and e.criptografia_ja_ativa and not e.simulacao:
-            rel.avisos.append("O backup não saiu criptografado; senhas salvas e dados de Saúde não serão transferidos.")
+        except Exception as erro:
+            self._evento("verificacao_falha", **_descrever_erro(erro))
+            raise
         e.relatorio = rel.para_dict()
         e.anotar(f"Verificação: {'APROVADO' if rel.ok else 'REPROVADO'} — {rel.mensagens} mensagens, "
                  f"{rel.midias} mídias, {rel.arquivos} arquivos")
+        self._evento("verificacao", aprovado=rel.ok, problemas=rel.problemas[:10], avisos=rel.avisos[:10],
+                     criptografado=rel.criptografado, ios_backup=rel.ios_backup, arquivos=rel.arquivos,
+                     backup_gb=_gb(rel.bytes_total), midias=rel.midias, whatsapp=rel.whatsapp_bundle,
+                     banco_integro=rel.banco_integro, mensagens=rel.mensagens, conversas=rel.conversas,
+                     anexos_referenciados=rel.anexos_referenciados, anexos_presentes=rel.anexos_presentes,
+                     amostra=rel.amostra_conferida, amostra_falhas=rel.amostra_falhas,
+                     whatsapp_gb=_gb(rel.bytes_whatsapp))
         if rel.ok:
             e.avancar_para("destino")
         self.salvar()
         return rel
+
+    def _arquivo_inventario(self) -> Path:
+        pasta = pasta_dados() / "inventarios"
+        pasta.mkdir(exist_ok=True)
+        return pasta / f"{self.estado.sessao}.tsv.gz"
 
     @property
     def relatorio(self) -> RelatorioBackup | None:
@@ -171,19 +242,43 @@ class Migracao:
         if not prontos:
             return None, [checagens.Checagem("iPhone novo", checagens.Status.BLOQUEIO, "Nenhum iPhone conectado.",
                                              "Conecte o iPhone novo ao PC pelo cabo e desbloqueie.")]
-        # Com os dois ligados, escolhe o que não é o antigo.
-        destino = next((a for a in prontos if a.udid != e.origem["udid"]), prontos[0])
+        # Só o iPhone escolhido como novo na conferência inicial pode receber o backup: a restauração
+        # apaga o aparelho, então outro iPhone conectado por engano nunca é escolhido sozinho.
+        escolhido = (e.destino or {}).get("udid")
+        destino = next((a for a in prontos if a.udid == escolhido), None)
+        if destino is None:
+            antigo = next((a for a in prontos if a.udid == e.origem["udid"]), None)
+            if antigo and len(prontos) == 1:
+                c += checagens.checar_destino_para_restaurar(antigo, e.origem["udid"], rel.ios_backup,
+                                                             rel.bytes_total, self.ultimas_versoes())
+                return antigo, c
+            rotulo = Aparelho.de_dict(e.destino).rotulo() if e.destino else "o iPhone novo"
+            c.append(checagens.Checagem(
+                "iPhone novo", checagens.Status.BLOQUEIO,
+                f"O iPhone escolhido como novo na conferência ({rotulo}) não está conectado. "
+                + ("Há outro iPhone conectado, mas ele não foi o escolhido." if prontos else ""),
+                "Conecte o iPhone novo escolhido antes. Para usar outro aparelho como novo, volte à etapa "
+                "\"Conectar e conferir\" e faça a conferência de novo."))
+            _registrar_checagens("conferência do iPhone novo", c)
+            return None, c
         c += checagens.checar_destino_para_restaurar(destino, e.origem["udid"], rel.ios_backup, rel.bytes_total,
                                                      self.ultimas_versoes())
-        problemas = conferir_antes_de_restaurar(e.pasta_aparelho, rel)
+        problemas = conferir_antes_de_restaurar(e.pasta_aparelho, rel, self._arquivo_inventario())
         if problemas:
             c += [checagens.Checagem("Integridade do backup", checagens.Status.BLOQUEIO, p,
                                      "Volte à etapa de verificação.") for p in problemas]
         else:
-            c.append(checagens.Checagem("Integridade do backup", checagens.Status.OK,
-                                        "O backup está idêntico ao que foi verificado."))
+            c.append(checagens.Checagem(
+                "Integridade do backup", checagens.Status.OK,
+                f"Nenhum dos {rel.inventario_arquivos:,} arquivos mudou desde a verificação".replace(",", ".")
+                + " (tamanho e data de cada um conferidos)."))
+        c += self.verificar_sistema("restauracao")
+        _registrar_checagens("conferência do iPhone novo", c)
+        self._evento("conferencia_destino", liberada=not tem_bloqueio(c), pendencias=_pendencias(c),
+                     destino=_resumo_aparelho(destino))
         if not tem_bloqueio(c):
             e.destino = destino.para_dict()
+            e.destino_conferido = destino.udid
             self.salvar()
         return destino, c
 
@@ -193,20 +288,143 @@ class Migracao:
             raise ErroAparelho("Faça a verificação do backup e do iPhone novo antes de restaurar.")
         if e.destino["udid"] == e.origem["udid"]:
             raise ErroAparelho("O aparelho escolhido para restaurar é o iPhone antigo. Operação cancelada.")
+        if e.destino_conferido != e.destino["udid"]:
+            raise ErroAparelho("O iPhone novo ainda não foi conferido nesta etapa.", "Clique em \"Conferir o iPhone "
+                               "novo\" antes de restaurar.")
         if rel.criptografado and not self.senha:
             raise ErroAparelho("Informe a senha do backup antes de restaurar.")
-        problemas = conferir_antes_de_restaurar(e.pasta_aparelho, rel)
+        presentes = {a.udid for a in self.backend.listar() if not a.erro}
+        if e.destino["udid"] not in presentes:
+            raise ErroAparelho("O iPhone novo conferido não está mais conectado. Nada foi alterado.",
+                               "Conecte e desbloqueie o iPhone novo e confira de novo.")
+        problemas = conferir_antes_de_restaurar(e.pasta_aparelho, rel, self._arquivo_inventario())
         if problemas:
             raise ErroAparelho(problemas[0], "Volte à etapa de verificação.")
+        self._exigir_pc_pronto("restauracao")
         e.anotar(f"Restauração iniciada em {e.destino.get('nome') or e.destino['udid']}")
         e.avancar_para("restauracao")
         self.salvar()
-        self.backend.restaurar(e.destino["udid"], Path(e.pasta_backup), e.origem["udid"],
-                               self.senha or "", progresso)
+        self._evento("restauracao_inicio", destino=_resumo_aparelho(Aparelho.de_dict(e.destino)))
+        acomp = _Acompanhamento(progresso, "restauração")
+        try:
+            self.backend.restaurar(e.destino["udid"], Path(e.pasta_backup), e.origem["udid"],
+                                   self.senha or "", acomp)
+        except BaseException as erro:
+            self._evento_falha("restauracao_falha", erro, acomp)
+            raise
+        self._evento("restauracao_ok", minutos=acomp.minutos())
         e.restaurado_em = datetime.now().isoformat(timespec="seconds")
         e.anotar("Restauração concluída; o iPhone novo vai reiniciar")
         e.avancar_para("concluido")
         self.salvar()
+
+    # --- conferência no iPhone novo ------------------------------------------------------
+
+    def conferir_resultado(self) -> dict:
+        """Depois que o iPhone novo reinicia: o WhatsApp voltou e trouxe os dados?"""
+        e, rel = self.estado, self.relatorio
+        if not e.restaurado_em or not e.destino:
+            raise ErroAparelho("A restauração ainda não foi concluída.")
+        presentes = {a.udid: a for a in self.backend.listar()}
+        ap = presentes.get(e.destino["udid"])
+        if ap is None:
+            raise ErroAparelho("O iPhone novo não está conectado.",
+                               "Depois que ele reiniciar, desbloqueie, conecte pelo cabo e tente de novo.")
+        if ap.erro:
+            raise ErroAparelho("O iPhone novo ainda não liberou a conexão.",
+                               "Desbloqueie o iPhone novo, toque em \"Confiar\" se aparecer e tente de novo.")
+        r = self.backend.whatsapp_no_destino(e.destino["udid"])
+        # Compara com o que o iPhone antigo informava do WhatsApp (mesma medida: app + dados).
+        esperado = (e.whatsapp or {}).get("tamanho") or (rel.bytes_whatsapp if rel else 0)
+        r["esperado"] = esperado
+        if r.get("estado") == "instalado" and esperado and r.get("dados") is not None:
+            r["proporcao"] = round(r["dados"] / esperado, 2)
+        e.resultado = r
+        e.anotar(f"Conferência no iPhone novo: WhatsApp {r.get('estado')}"
+                 + (f", dados {r['proporcao']:.0%} do backup" if "proporcao" in r else ""))
+        self.salvar()
+        self._evento("resultado", estado=r.get("estado"), dados_gb=_gb(r.get("dados")), esperado_gb=_gb(esperado),
+                     proporcao=r.get("proporcao"), versao_whatsapp=r.get("versao"))
+        return r
+
+    def confirmar_resultado(self, conversas_ok: bool, midias_ok: bool, observacao: str = "") -> None:
+        e = self.estado
+        e.confirmado_em = datetime.now().isoformat(timespec="seconds")
+        e.anotar(f"Pessoa conferiu no iPhone novo: conversas {'OK' if conversas_ok else 'COM PROBLEMA'}, "
+                 f"mídias {'OK' if midias_ok else 'COM PROBLEMA'}")
+        self.salvar()
+        from migrador.diagnostico import anonimizar
+        self._evento("resultado_confirmado", conversas_ok=conversas_ok, midias_ok=midias_ok,
+                     observacao=anonimizar(observacao)[:500] or None)
+
+
+def _rebaixar_na_simulacao(c: list[Checagem]) -> None:
+    """No treino, mostra as regras reais do PC sem impedir de seguir."""
+    for ch in c:
+        if ch.status == Status.BLOQUEIO:
+            ch.status = Status.AVISO
+            ch.detalhe = "[Simulação: numa migração real, isto impediria continuar.] " + ch.detalhe
+
+
+def _registrar_checagens(onde: str, c: list[Checagem]) -> None:
+    for ch in c:
+        if ch.status != Status.OK:
+            log.info("%s: [%s] %s — %s", onde, ch.status.name, ch.titulo, ch.detalhe)
+    log.info("%s: %d itens, %s", onde, len(c), "com bloqueio" if tem_bloqueio(c) else "liberada")
+
+
+class _Acompanhamento:
+    """Repassa o progresso para a tela e anota no log cada 5% e o tempo: mostra onde um
+    backup travou ou ficou lento. Guarda a última porcentagem para o evento de falha."""
+
+    def __init__(self, progresso: Callable[[float], None], nome: str):
+        self.progresso, self.nome = progresso, nome
+        self.inicio = time.monotonic()
+        self.ultimo: float | None = None
+        self._anotado = -5.0
+
+    def minutos(self) -> float:
+        return round((time.monotonic() - self.inicio) / 60, 1)
+
+    def __call__(self, p) -> None:
+        try:
+            valor = float(p)
+        except (TypeError, ValueError):
+            valor = None
+        if valor is not None:
+            self.ultimo = round(valor, 1)
+            if valor >= self._anotado + 5:
+                self._anotado = valor - valor % 5
+                log.info("%s: %.0f%% em %.0f min", self.nome, valor, self.minutos())
+        self.progresso(p)
+
+
+def _gb(n: int | None) -> float | None:
+    return round(n / GB, 1) if n else None
+
+
+def _resumo_aparelho(ap: Aparelho | None) -> dict | None:
+    """Só o que ajuda a investigar: modelo, iOS, espaço e bateria. Sem nome nem número de série."""
+    if not ap:
+        return None
+    return {"modelo": ap.tipo, "ios": ap.ios, "capacidade_gb": _gb(ap.capacidade), "livre_gb": _gb(ap.livre),
+            "bateria": ap.bateria, "buscar": ap.buscar_ativo, "erro": ap.erro}
+
+
+def _pendencias(c: list[Checagem]) -> list[str]:
+    return [f"{ch.status.value}: {ch.titulo}" for ch in c if ch.status in (Status.BLOQUEIO, Status.AVISO)]
+
+
+def _descrever_erro(erro: BaseException) -> dict:
+    from migrador.diagnostico import anonimizar
+    d = {"erro": type(erro).__name__, "mensagem": anonimizar(str(erro))[:300]}
+    if isinstance(erro, ErroAparelho) and erro.como_resolver:
+        d["orientacao"] = anonimizar(erro.como_resolver)[:300]
+    causa = erro.__cause__ or erro.__context__
+    if causa is not None and causa is not erro:
+        d["causa"] = type(causa).__name__
+        d["causa_mensagem"] = anonimizar(str(causa))[:300]
+    return d
 
 
 def _tamanho_pasta(pasta: Path) -> int:

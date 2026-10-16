@@ -20,10 +20,13 @@ def tamanho_estimado_backup(origem: Aparelho, whatsapp: InfoWhatsApp | None) -> 
     return max(candidatos) if candidatos else 0
 
 
-def checar_pc(servico_ok: bool, pasta: Path, livre: int, sistema_arquivos: str | None,
+def checar_pc(servico_ok: bool | None, pasta: Path, livre: int, sistema_arquivos: str | None,
               necessario: int) -> list[Checagem]:
+    """servico_ok=None: o serviço já foi conferido em checar_sistema()."""
     c: list[Checagem] = []
-    if servico_ok:
+    if servico_ok is None:
+        pass
+    elif servico_ok:
         c.append(Checagem("Serviço da Apple no PC", Status.OK, "Encontrado."))
     else:
         c.append(Checagem("Serviço da Apple no PC", Status.BLOQUEIO,
@@ -175,4 +178,127 @@ def checar_destino_para_restaurar(destino: Aparelho, udid_origem: str, ios_backu
     if destino.bateria is not None and destino.bateria < BATERIA_MINIMA:
         c.append(Checagem("Bateria do iPhone novo", Status.AVISO, f"Bateria em {destino.bateria}%.",
                           "Deixe o iPhone na tomada durante a restauração."))
+    return c
+
+
+# --- sistema do PC -------------------------------------------------------------------------
+
+LOJA_APPLE_DEVICES = "ms-windows-store://search/?query=Apple%20Devices"
+INSTALAR_APPLE = (
+    "Instale o app \"Apple Devices\" pela Microsoft Store (botão \"Abrir a Microsoft Store\"), abra-o uma "
+    "vez e clique em \"Verificar de novo\". Se o PC não tiver a Microsoft Store, instale o iTunes pelo site "
+    "da Apple."
+)
+
+
+def checar_sistema(s, simulado: bool = False, momento: str = "preparacao") -> list[Checagem]:
+    """Verificações do PC. `momento`: preparacao (antes de conectar), backup ou restauracao.
+    Na preparação, programas concorrentes e falta de confiança são só avisos; na hora da cópia, bloqueiam."""
+    from migrador.sistema import ACOES_TAMPA
+    c: list[Checagem] = []
+
+    if s.build is not None and s.build < 19041:
+        c.append(Checagem("Windows", Status.AVISO, f"{s.windows}: versão antiga do Windows 10.",
+                          "Atualize o Windows (Configurações > Windows Update). O app Apple Devices pede o "
+                          "Windows 10 atualizado ou o Windows 11; se não der, use o iTunes."))
+    else:
+        c.append(Checagem("Windows", Status.OK, s.windows or "Versão não identificada."))
+
+    if s.apple_devices:
+        c.append(Checagem("App Apple Devices", Status.OK, f"Instalado (versão {s.apple_devices})."))
+    elif s.itunes:
+        c.append(Checagem("iTunes", Status.OK, "Instalado. Ele traz o serviço que conversa com iPhones."))
+    else:
+        c.append(Checagem("App Apple Devices ou iTunes", Status.BLOQUEIO,
+                          "Nenhum dos dois está instalado neste PC. Sem eles o Windows não reconhece iPhones.",
+                          INSTALAR_APPLE))
+
+    if s.usbmux_ok:
+        c.append(Checagem("Serviço da Apple no PC", Status.OK, "Rodando e respondendo."))
+    elif s.apple_devices or s.itunes:
+        parado = " (o processo do serviço nem está aberto)" if s.servico_rodando is False else ""
+        c.append(Checagem("Serviço da Apple no PC", Status.BLOQUEIO,
+                          f"O app está instalado, mas o serviço que conversa com iPhones não respondeu{parado}.",
+                          "Abra o app Apple Devices (ou o iTunes) uma vez e feche. Se continuar, reinicie o PC."))
+
+    if s.confiaveis:
+        n = len(s.confiaveis)
+        texto = f"{n} iPhones já confiam neste PC." if n > 1 else "1 iPhone já confia neste PC."
+        c.append(Checagem("Primeira conexão com este PC", Status.OK,
+                          texto + " Os que ainda não confiam vão pedir \"Confiar\" ao conectar."))
+    else:
+        c.append(Checagem("Primeira conexão com este PC", Status.AVISO,
+                          "Nenhum iPhone foi conectado e autorizado neste PC ainda.",
+                          "Na próxima etapa, conecte cada iPhone pelo cabo, desbloqueie, toque em \"Confiar\" e "
+                          "digite o código do iPhone. Isso só é pedido na primeira vez."))
+
+    if s.tem_bateria is False:
+        c.append(Checagem("Energia do PC", Status.OK, "PC de mesa (sem bateria). Mantenha-o ligado na tomada."))
+    elif s.na_tomada is True:
+        pct = f" Bateria em {s.bateria_pct}%." if s.bateria_pct is not None else ""
+        c.append(Checagem("Energia do PC", Status.OK, f"Notebook ligado na tomada.{pct}"))
+    elif s.na_tomada is False:
+        pct = f" (bateria em {s.bateria_pct}%)" if s.bateria_pct is not None else ""
+        c.append(Checagem("Energia do PC", Status.AVISO if simulado else Status.BLOQUEIO,
+                          f"O notebook está funcionando na bateria{pct}. Backup e restauração levam horas; se a "
+                          "bateria acabar, a cópia é interrompida.",
+                          "Ligue o carregador do notebook na tomada e clique em \"Verificar de novo\"."))
+    else:
+        c.append(Checagem("Energia do PC", Status.AVISO, "Não consegui ler se o PC está na tomada.",
+                          "Confira se o carregador está ligado."))
+
+    if s.tem_bateria:
+        acao = s.tampa_ca
+        if acao is None:
+            c.append(Checagem("Tampa do notebook", Status.AVISO, "Não consegui ler o que acontece ao fechar a tampa.",
+                              "Não feche a tampa do notebook durante o processo."))
+        elif acao != 0:
+            c.append(Checagem("Tampa do notebook", Status.AVISO,
+                              f"Fechar a tampa faz o notebook {ACOES_TAMPA.get(acao, 'parar')}, e isso interrompe "
+                              "a cópia. O programa impede a suspensão por inatividade, mas não a da tampa.",
+                              "Deixe a tampa aberta até o fim. Ou mude em Painel de Controle > Opções de Energia > "
+                              "\"Escolher a função do fechamento da tampa\" > Na tomada: \"Nada a fazer\"."))
+        else:
+            c.append(Checagem("Tampa do notebook", Status.OK, "Fechar a tampa na tomada não suspende o notebook."))
+
+    c.append(Checagem("Suspensão do Windows", Status.INFO,
+                      "Durante backup, verificação e restauração o programa impede que o PC entre em suspensão "
+                      "por inatividade. Desligar ou reiniciar o PC continua interrompendo a cópia."))
+
+    if s.concorrentes:
+        status = Status.AVISO if (simulado or momento == "preparacao") else Status.BLOQUEIO
+        c.append(Checagem("Outros programas de iPhone abertos", status,
+                          f"Aberto agora: {', '.join(s.concorrentes)}. Eles podem começar um backup ou uma "
+                          "sincronização sozinhos ao ver o iPhone e disputar a conexão.",
+                          "Feche a janela desses programas (o serviço da Apple continua funcionando em segundo "
+                          "plano) e clique em \"Verificar de novo\"."))
+    else:
+        c.append(Checagem("Outros programas de iPhone", Status.OK,
+                          "Nenhum aberto (iTunes, 3uTools, iMazing, CopyTrans…)."))
+    return c
+
+
+def checar_confianca(aparelhos: list[Aparelho]) -> list[Checagem]:
+    """Por aparelho: a primeira conexão (o toque em "Confiar") já foi feita?"""
+    return [Checagem(f"Confiança: {ap.rotulo()}", Status.OK, "Conectado pelo cabo e autorizado neste PC.")
+            for ap in aparelhos if not ap.erro]
+
+
+def checar_pasta(pasta: Path, sincronizada: str | None, gravavel: bool, removivel: bool) -> list[Checagem]:
+    c = []
+    if gravavel:
+        c.append(Checagem("Permissão na pasta do backup", Status.OK, "O programa consegue gravar nela."))
+    else:
+        c.append(Checagem("Permissão na pasta do backup", Status.BLOQUEIO,
+                          f"O programa não consegue gravar em {pasta}.",
+                          "Escolha outra pasta, por exemplo na raiz de outro disco."))
+    if sincronizada:
+        c.append(Checagem("Pasta sincronizada com a nuvem", Status.BLOQUEIO,
+                          f"A pasta está dentro do {sincronizada}. Ele tentaria enviar o backup inteiro para a "
+                          "nuvem e pode deixar arquivos guardados só na nuvem, o que estraga a restauração.",
+                          f"Escolha uma pasta fora do {sincronizada}, por exemplo C:\\MigradorWhatsApp-Backup."))
+    if removivel:
+        c.append(Checagem("Disco removível", Status.AVISO,
+                          f"{pasta.anchor} é um disco removível (pendrive ou HD externo).",
+                          "Não desconecte o disco até o fim da restauração e ligue-o direto no PC, sem hub USB."))
     return c

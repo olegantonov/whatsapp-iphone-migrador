@@ -3,6 +3,8 @@ import logging
 import os
 import queue
 import secrets
+import shutil
+import tempfile
 import threading
 import time
 import traceback
@@ -12,7 +14,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from migrador import atualizador, checagens, disco, energia, registro
+from migrador import atualizador, checagens, diagnostico, disco, energia, registro, telemetria
 from migrador.config import (
     APP_NOME, EMPRESA, REPOSITORIO, URL_CONTRIBUIR, URL_PROBLEMAS, URL_REPOSITORIO, documento_legal, recurso,
 )
@@ -45,6 +47,23 @@ ICONES = {
 }
 LARGURA_TEXTO = 640
 INTERVALO_ATUALIZACAO_MS = 6 * 3600 * 1000
+
+
+def _milhar(n: int) -> str:
+    return f"{n:,}".replace(",", ".")
+
+
+def _checagem_anexos(rel: RelatorioBackup) -> Checagem:
+    titulo = "Anexos citados nas conversas"
+    if rel.anexos_referenciados < 0:
+        return Checagem(titulo, Status.AVISO, "Não consegui cruzar (formato do banco diferente).")
+    if not rel.anexos_referenciados:
+        return Checagem(titulo, Status.INFO, "As conversas não citam anexos.")
+    ausentes = rel.anexos_referenciados - rel.anexos_presentes
+    texto = (f"{rel.anexos_presentes:,} de {rel.anexos_referenciados:,} estão no backup".replace(",", ".")
+             + (f" ({ausentes:,} ausentes)".replace(",", ".") if ausentes else ""))
+    status = Status.OK if not ausentes else (Status.BLOQUEIO if not rel.anexos_presentes else Status.AVISO)
+    return Checagem(titulo, status, texto)
 
 
 def _gerar_senha() -> str:
@@ -84,6 +103,8 @@ class App(ctk.CTk):
         self.after(100, self._processar_fila)
         self.after(200, self._atualizar_progresso)
         self.after(1500, self._checar_atualizacao)
+        if telemetria.consentimento() is None:
+            self.after(900, self._perguntar_telemetria)
 
         self.mostrar("inicio")
 
@@ -116,6 +137,9 @@ class App(ctk.CTk):
         ctk.CTkButton(rodape, text="Abrir registros (logs)", height=26, fg_color="transparent",
                       text_color=AZUL, hover_color=CARTAO, anchor="w",
                       command=lambda: os.startfile(registro.pasta_logs())).pack(anchor="w")
+        ctk.CTkButton(rodape, text="Enviar diagnóstico ao suporte", height=26, fg_color="transparent",
+                      text_color=AZUL, hover_color=CARTAO, anchor="w",
+                      command=self._dialogo_diagnostico).pack(anchor="w")
         ctk.CTkButton(rodape, text="Procurar atualização", height=26, fg_color="transparent",
                       text_color=AZUL, hover_color=CARTAO, anchor="w",
                       command=lambda: self._checar_atualizacao(manual=True)).pack(anchor="w")
@@ -163,6 +187,15 @@ class App(ctk.CTk):
         self.btn_continuar.pack(side="right")
 
     # ------------------------------------------------------------------ infraestrutura
+
+    def report_callback_exception(self, tipo, valor, tb):
+        # Erros em cliques e callbacks do Tk: no .exe sem console iriam para lugar nenhum.
+        log.error("erro na interface", exc_info=(tipo, valor, tb))
+        telemetria.registrar_excecao(tipo, valor, tb, onde="interface")
+        try:
+            self._mostrar_erro(valor)
+        except Exception:
+            pass
 
     def _processar_fila(self):
         while True:
@@ -217,7 +250,99 @@ class App(ctk.CTk):
             texto = e.mensagem + (f"\n\nO que fazer: {e.como_resolver}" if e.como_resolver else "")
         else:
             texto = f"{type(e).__name__}: {e}\n\nDetalhes no registro (logs)."
+        texto += ("\n\nSe o problema continuar, clique em \"Enviar diagnóstico ao suporte\" (no canto "
+                  "inferior esquerdo).")
         messagebox.showerror("Não deu certo", texto, parent=self)
+
+    def _perguntar_telemetria(self):
+        aceito = messagebox.askyesno(
+            "Ajude a melhorar o programa",
+            "Podemos enviar dados anônimos de funcionamento para o projeto? Eles mostram se a migração deu "
+            "certo e onde costuma falhar, para corrigirmos os problemas.\n\n"
+            "Vai: em que etapa a migração está, erros, quanto tempo levou, modelo, versão do iOS e espaço "
+            "dos iPhones, versão do programa e do Windows.\n\n"
+            "Nunca vai: conversas, fotos, contatos, senhas, nomes dos aparelhos, números de série ou seu "
+            "nome.\n\nVocê pode mudar isso depois em \"Saiba mais\".",
+            parent=self)
+        telemetria.definir_consentimento(aceito)
+        if aceito:
+            telemetria.registrar("programa_aberto", primeira_vez=True)
+
+    def _dialogo_diagnostico(self):
+        jan = ctk.CTkToplevel(self)
+        jan.title("Enviar diagnóstico ao suporte")
+        jan.geometry("560x400")
+        jan.transient(self)
+        jan.after(50, jan.grab_set)
+        ctk.CTkLabel(jan, text="Enviar diagnóstico ao suporte", font=ctk.CTkFont(size=17, weight="bold")).pack(
+            anchor="w", padx=20, pady=(18, 4))
+        ctk.CTkLabel(jan, wraplength=510, justify="left", text=(
+            "O pacote leva os registros do programa e o andamento da migração. Antes de sair do PC, os "
+            "números de série e os nomes dos iPhones e o seu nome de usuário do Windows são trocados por "
+            "marcadores. Não vão senhas, conversas, fotos nem contatos.")).pack(anchor="w", padx=20)
+        ctk.CTkLabel(jan, text="O que aconteceu? (opcional)").pack(anchor="w", padx=20, pady=(12, 2))
+        caixa = ctk.CTkTextbox(jan, height=110)
+        caixa.pack(fill="x", padx=20)
+        status = ctk.CTkLabel(jan, text="", text_color=CINZA, wraplength=510, justify="left")
+        status.pack(anchor="w", padx=20, pady=(8, 0))
+        botoes = ctk.CTkFrame(jan, fg_color="transparent")
+        botoes.pack(fill="x", padx=20, pady=14, side="bottom")
+
+        def descricao():
+            return caixa.get("1.0", "end").strip()
+
+        def enviar():
+            btn_enviar.configure(state="disabled")
+            btn_salvar.configure(state="disabled")
+            status.configure(text="Enviando…", text_color=CINZA)
+            texto = descricao()
+
+            def trabalho():
+                pasta = Path(tempfile.mkdtemp(prefix="migrador-diag-"))
+                zip_path = diagnostico.gerar_pacote(pasta / "diagnostico.zip", texto)
+                try:
+                    return telemetria.enviar_diagnostico(zip_path, texto)
+                finally:
+                    shutil.rmtree(pasta, ignore_errors=True)
+
+            def ok(protocolo):
+                status.configure(text=f"Enviado. Protocolo: {protocolo}\nInforme este protocolo ao suporte.",
+                                 text_color=VERDE)
+                btn_enviar.configure(text="Fechar", state="normal", command=jan.destroy)
+
+            def falhou(e):
+                log.warning("envio do diagnóstico falhou: %s", e)
+                status.configure(text="Não consegui enviar (sem internet?). Use \"Salvar arquivo\" e mande o "
+                                      "arquivo ao suporte de outro jeito.", text_color=VERMELHO)
+                btn_enviar.configure(state="normal")
+                btn_salvar.configure(state="normal")
+
+            self.em_segundo_plano(trabalho, ok, falhou, status="Enviando diagnóstico…")
+
+        def salvar():
+            sugestao = f"diagnostico-migrador-{time.strftime('%Y%m%d-%H%M')}.zip"
+            destino = filedialog.asksaveasfilename(
+                parent=jan, title="Salvar diagnóstico", defaultextension=".zip", initialfile=sugestao,
+                initialdir=str(Path.home() / "Desktop"), filetypes=[("Arquivo zip", "*.zip")])
+            if not destino:
+                return
+            try:
+                diagnostico.gerar_pacote(Path(destino), descricao())
+            except Exception as e:
+                log.exception("falha ao gerar diagnóstico")
+                status.configure(text=f"Não consegui gerar o arquivo: {e}", text_color=VERMELHO)
+                return
+            status.configure(text=f"Arquivo salvo em {destino}", text_color=VERDE)
+            try:
+                os.startfile(Path(destino).parent)
+            except Exception:
+                pass
+
+        btn_enviar = ctk.CTkButton(botoes, text="Enviar agora", width=150, command=enviar)
+        btn_enviar.pack(side="right")
+        btn_salvar = ctk.CTkButton(botoes, text="Salvar arquivo", width=130, fg_color="transparent",
+                                   border_width=1, text_color=("gray20", "gray85"), command=salvar)
+        btn_salvar.pack(side="right", padx=8)
 
     def _atualizar_progresso(self):
         alvo, dado = self._alvo_progresso, self._progresso
@@ -449,17 +574,32 @@ class App(ctk.CTk):
         self.mostrar("preparacao")
 
     def _tela_preparacao(self):
-        self._cabecalho("Preparação", "Marque cada item quando ele estiver feito. Isso evita a maioria dos problemas.")
+        self._cabecalho("Preparação", "O programa confere o PC sozinho. Depois, marque os itens que só você pode "
+                                      "conferir. Isso evita a maioria dos problemas.")
+        c = self._cartao("1. Verificação automática do PC")
+        self._texto(c, "App e serviço da Apple, iPhones que já confiam neste PC, energia, tampa do notebook e "
+                       "programas que podem disputar o iPhone.", cor=CINZA)
+        linha = ctk.CTkFrame(c, fg_color="transparent")
+        linha.pack(anchor="w", padx=18, pady=(4, 4))
+        ctk.CTkButton(linha, text="↻  Verificar de novo", width=170, command=self._verificar_pc).pack(side="left")
+        self.btn_loja = ctk.CTkButton(linha, text="Abrir a Microsoft Store", width=190, fg_color="transparent",
+                                      border_width=1, text_color=("gray20", "gray85"),
+                                      command=lambda: webbrowser.open(checagens.LOJA_APPLE_DEVICES))
+        self.quadro_pc = ctk.CTkFrame(c, fg_color="transparent")
+        self.quadro_pc.pack(fill="x", pady=(0, 10))
+        self.pc_ok = False
+
         itens = [
-            "Instalei o app \"Apple Devices\" (Microsoft Store) ou o iTunes neste PC e abri uma vez.",
-            "Tenho cabos USB que transmitem dados (os que vieram com o iPhone servem).",
+            "Tenho cabos USB que transmitem dados (os que vieram com o iPhone servem). Vou ligar os iPhones direto "
+            "no PC, sem hub.",
             "O iPhone novo está ligado e configurado (ou na tela de configuração inicial). Ele será apagado: "
             "salvei o que havia de importante nele.",
             "No iPhone antigo, atualizei o WhatsApp pela App Store.",
             "Os dois iPhones estão carregados ou vão ficar na tomada durante o processo.",
-            "O PC está na tomada e vai ficar ligado durante horas (o programa impede a suspensão).",
+            "Sei a senha do meu Apple ID: o iPhone novo vai pedir para baixar os apps de novo.",
+            "O PC vai ficar ligado durante horas, sem ser desligado nem reiniciado.",
         ]
-        c = self._cartao("Lista de preparação")
+        c = self._cartao("2. Confira você mesmo")
         self.vars_prep = []
         for item in itens:
             v = ctk.BooleanVar(value=False)
@@ -472,9 +612,31 @@ class App(ctk.CTk):
                        "falhar com conversas muito grandes. Aqui a cópia vai por cabo para o disco do PC, sem "
                        "limite de nuvem, e cada etapa é conferida antes da próxima.", pady=(2, 14))
         self._botao_continuar("Continuar →", self._ir_conexao, habilitado=False)
+        self._verificar_pc()
+
+    def _verificar_pc(self):
+        for w in self.quadro_pc.winfo_children():
+            w.destroy()
+        self._texto(self.quadro_pc, "Verificando o PC…", cor=CINZA)
+        self.em_segundo_plano(lambda: self.migracao.verificar_sistema("preparacao"), self._mostrar_pc,
+                              status="Verificando o PC…")
+
+    def _mostrar_pc(self, c):
+        if self.tela_atual != "preparacao":
+            return
+        for w in self.quadro_pc.winfo_children():
+            w.destroy()
+        self.pc_ok = not tem_bloqueio(c)
+        self._lista_checagens(self.quadro_pc, c)
+        if any(ch.titulo.startswith("App Apple Devices") and ch.status != Status.OK for ch in c):
+            self.btn_loja.pack(side="left", padx=10)
+        else:
+            self.btn_loja.pack_forget()
+        self._conferir_prep()
 
     def _conferir_prep(self):
-        self._botao_continuar("Continuar →", self._ir_conexao, habilitado=all(v.get() for v in self.vars_prep))
+        pronto = all(v.get() for v in self.vars_prep) and getattr(self, "pc_ok", False)
+        self._botao_continuar("Continuar →", self._ir_conexao, habilitado=pronto)
 
     def _ir_conexao(self):
         self.migracao.estado.avancar_para("conexao")
@@ -728,10 +890,17 @@ class App(ctk.CTk):
         self.btn_backup.configure(state="disabled")
         self.btn_cancelar.configure(state="normal")
 
-        def prog(p):
-            self._progresso = (float(p), "Copiando o conteúdo do iPhone antigo…")
+        aviso_atual = [""]
 
-        self.em_segundo_plano(lambda: self.migracao.fazer_backup(prog, self.cancelar), self._backup_ok,
+        def prog(p):
+            self._progresso = (float(p), aviso_atual[0] or "Copiando o conteúdo do iPhone antigo…")
+
+        def aviso(texto):
+            aviso_atual[0] = texto
+            pct = self._progresso[0] if self._progresso else 0
+            self._progresso = (pct, texto or "Copiando o conteúdo do iPhone antigo…")
+
+        self.em_segundo_plano(lambda: self.migracao.fazer_backup(prog, self.cancelar, aviso), self._backup_ok,
                               self._backup_falhou, status="Backup em andamento…", manter_acordado=True)
         self.btn_cancelar.configure(state="normal")
 
@@ -844,12 +1013,20 @@ class App(ctk.CTk):
             Checagem("Fotos, vídeos, áudios e documentos do WhatsApp", Status.OK if rel.midias else Status.AVISO,
                      f"{rel.midias:,} arquivos · {formatar_bytes(rel.bytes_midia)}".replace(",", ".")),
             Checagem("Banco de conversas", Status.OK if rel.banco_integro else Status.BLOQUEIO,
-                     "Íntegro" if rel.banco_integro else "Com problema"),
+                     "Íntegro (teste de integridade do SQLite)" if rel.banco_integro else "Com problema"),
+            _checagem_anexos(rel),
+            Checagem("Teste de mídias", Status.OK if rel.amostra_conferida and not rel.amostra_falhas else
+                     (Status.BLOQUEIO if rel.amostra_falhas else Status.AVISO),
+                     f"{rel.amostra_conferida} mídias sorteadas foram decifradas por inteiro e conferidas"
+                     + (f"; {rel.amostra_falhas} falharam" if rel.amostra_falhas else "")),
             Checagem("Arquivos no backup", Status.OK if not rel.arquivos_faltando else Status.BLOQUEIO,
                      f"{rel.arquivos:,} arquivos · {formatar_bytes(rel.bytes_total)}".replace(",", ".")
                      + (f" · {rel.arquivos_faltando} faltando" if rel.arquivos_faltando else "")),
-            Checagem("Criptografia", Status.OK if rel.criptografado else Status.INFO,
+            Checagem("Criptografia", Status.OK if rel.criptografado else Status.BLOQUEIO,
                      "Backup protegido por senha" if rel.criptografado else "Backup sem senha"),
+            Checagem("Inventário", Status.INFO,
+                     f"Tamanho e data de {_milhar(rel.inventario_arquivos)} arquivos registrados. Antes de "
+                     "restaurar, o programa confere de novo que nenhum mudou."),
             Checagem("iOS do backup", Status.INFO, rel.ios_backup),
         ]
         itens += [Checagem(p, Status.BLOQUEIO) for p in rel.problemas]
@@ -883,6 +1060,11 @@ class App(ctk.CTk):
             "Conecte o iPhone novo a este PC pelo cabo e toque em \"Confiar\" se aparecer.",
             "Clique em \"Conferir iPhone novo\" abaixo.",
         ])
+        d = self.migracao.estado.destino
+        if d:
+            self._texto(c, f"Por segurança, só o iPhone escolhido como novo na conferência pode receber o backup: "
+                           f"{Aparelho.de_dict(d).rotulo()}. Apagar o iPhone não muda essa identificação.",
+                        cor=AZUL, pady=(0, 6))
         self._texto(c, "Alternativa sem apagar: deixe o iPhone novo configurado e desligue o \"Buscar iPhone\" nele. "
                        "A restauração substitui todo o conteúdo do mesmo jeito.", cor=CINZA, pady=(0, 14))
         c = self._cartao("Conferência do iPhone novo")
@@ -989,9 +1171,32 @@ class App(ctk.CTk):
             "Deixe-o no Wi-Fi e na tomada. Os apps, incluindo o WhatsApp, serão baixados da App Store "
             "automaticamente. Isso pode levar um tempo.",
             "Espere o ícone do WhatsApp terminar de baixar. NÃO apague nem reinstale o WhatsApp.",
-            "Abra o WhatsApp e confirme o seu número por SMS. As conversas, fotos e áudios estarão lá.",
+            "Abra o WhatsApp e confirme o seu número por SMS. Depois confira as conversas e as mídias (abaixo).",
             "Quando o WhatsApp do novo for ativado, o do antigo é desconectado. Isso é normal.",
         ])
+        c = self._cartao("Conferir o WhatsApp no iPhone novo", cor_borda=AZUL)
+        self._texto(c, "Quando o iPhone novo terminar de reiniciar, desbloqueie-o, conecte pelo cabo e clique abaixo. "
+                       "O programa confere se o WhatsApp voltou e se trouxe os dados do backup.", cor=CINZA)
+        ctk.CTkButton(c, text="🔍  Conferir o WhatsApp no iPhone novo", width=300,
+                      command=self._conferir_resultado).pack(anchor="w", padx=18, pady=(6, 6))
+        self.quadro_resultado = ctk.CTkFrame(c, fg_color="transparent")
+        self.quadro_resultado.pack(fill="x")
+        if e.resultado:
+            self._desenhar_resultado(e.resultado)
+        self._texto(c, "Depois de abrir o WhatsApp e confirmar o número, confira e marque:", negrito=True,
+                    pady=(10, 2))
+        self.var_conversas = ctk.BooleanVar(value=bool(e.confirmado_em))
+        self.var_midias = ctk.BooleanVar(value=bool(e.confirmado_em))
+        ctk.CTkCheckBox(c, text="As conversas antigas aparecem (role até as mais antigas de uma conversa longa).",
+                        variable=self.var_conversas).pack(anchor="w", padx=18, pady=4)
+        ctk.CTkCheckBox(c, text="As fotos, vídeos e áudios antigos abrem.",
+                        variable=self.var_midias).pack(anchor="w", padx=18, pady=4)
+        linha = ctk.CTkFrame(c, fg_color="transparent")
+        linha.pack(anchor="w", padx=18, pady=(4, 14))
+        ctk.CTkButton(linha, text="Registrar conferência", command=self._confirmar_resultado).pack(side="left")
+        ctk.CTkButton(linha, text="Algo não veio: pedir ajuda", fg_color="transparent", border_width=1,
+                      text_color=VERMELHO, command=self._dialogo_diagnostico).pack(side="left", padx=10)
+
         c = self._cartao("Depois de conferir")
         self._texto(c, "Só apague o backup do PC depois de conferir as conversas e mídias no iPhone novo. O backup "
                        "contém todo o conteúdo do iPhone antigo: não o deixe em computadores de terceiros.")
@@ -1003,6 +1208,54 @@ class App(ctk.CTk):
                           ).pack(side="left")
         ctk.CTkButton(linha, text="Salvar relatório…", command=self._salvar_relatorio).pack(side="left", padx=10)
         self._botao_continuar("Nova migração", lambda: self.mostrar("inicio"))
+
+    def _conferir_resultado(self):
+        for w in self.quadro_resultado.winfo_children():
+            w.destroy()
+        self.em_segundo_plano(self.migracao.conferir_resultado, self._desenhar_resultado,
+                              status="Conferindo o WhatsApp no iPhone novo…")
+
+    def _desenhar_resultado(self, r: dict):
+        if self.tela_atual != "concluido":
+            return
+        for w in self.quadro_resultado.winfo_children():
+            w.destroy()
+        estado = r.get("estado")
+        if estado == "instalado":
+            itens = [Checagem("WhatsApp no iPhone novo", Status.OK,
+                              "Instalado" + (f" (versão {r['versao']})" if r.get("versao") else "") + ".")]
+            prop = r.get("proporcao")
+            if prop is not None:
+                texto = (f"{formatar_bytes(r.get('dados'))} no iPhone novo; no iPhone antigo eram "
+                         f"{formatar_bytes(r.get('esperado'))} (app + dados).")
+                if prop >= 0.8:
+                    itens.append(Checagem("Dados do WhatsApp", Status.OK, texto))
+                else:
+                    itens.append(Checagem("Dados do WhatsApp", Status.AVISO, texto,
+                                          "Os dados podem ainda estar sendo organizados pelo iPhone. Abra o "
+                                          "WhatsApp, espere alguns minutos e confira de novo. Se continuar "
+                                          "bem menor, peça ajuda antes de apagar o backup."))
+        elif estado == "instalando":
+            itens = [Checagem("WhatsApp no iPhone novo", Status.AVISO, "Ainda está sendo baixado da App Store.",
+                              "Deixe o iPhone no Wi-Fi e na tomada, espere o ícone terminar de baixar e confira de "
+                              "novo. Não apague nem reinstale o WhatsApp.")]
+        else:
+            itens = [Checagem("WhatsApp no iPhone novo", Status.BLOQUEIO, "Não encontrei o WhatsApp.",
+                              "Confira se você entrou com o Apple ID no iPhone novo (Ajustes > [seu nome]) e se "
+                              "ele está no Wi-Fi. Os apps são baixados de novo depois da restauração. Se o "
+                              "WhatsApp não aparecer, peça ajuda; o backup e o iPhone antigo continuam intactos.")]
+        self._lista_checagens(self.quadro_resultado, itens)
+
+    def _confirmar_resultado(self):
+        conversas, midias = self.var_conversas.get(), self.var_midias.get()
+        self.migracao.confirmar_resultado(conversas, midias)
+        if conversas and midias:
+            messagebox.showinfo("Conferência registrada", "Ótimo! A migração está confirmada. Agora você pode "
+                                "apagar o backup do PC quando quiser.", parent=self)
+        else:
+            messagebox.showwarning("Conferência registrada", "Não apague o backup nem o iPhone antigo. Clique em "
+                                   "\"Algo não veio: pedir ajuda\" para enviar o diagnóstico ao suporte.",
+                                   parent=self)
 
     def _salvar_relatorio(self):
         e = self.migracao.estado
@@ -1101,8 +1354,18 @@ class App(ctk.CTk):
         c = secao("Privacidade")
         texto(c, "O programa não envia suas conversas, fotos, contatos ou qualquer dado dos iPhones para lugar "
                  "nenhum: o backup fica só no disco que você escolher neste PC.")
-        texto(c, "Ele acessa a internet apenas para: (1) consultar no GitHub se há versão nova do programa e (2) "
-                 "consultar na Apple qual é a versão mais recente do iOS para cada modelo de iPhone.", pady=(2, 14))
+        texto(c, "Ele acessa a internet para: (1) consultar no GitHub se há versão nova do programa, (2) "
+                 "consultar na Apple qual é a versão mais recente do iOS para cada modelo de iPhone e (3) se você "
+                 "permitir, enviar dados anônimos de funcionamento ao servidor do projeto.")
+        texto(c, "Os dados anônimos dizem em que etapa a migração está, os erros, o tempo gasto, o modelo, a versão "
+                 "do iOS e o espaço dos iPhones. Nunca levam conversas, fotos, contatos, senhas, nomes dos "
+                 "aparelhos ou números de série. Ficam guardados por 180 dias.")
+        var_tel = ctk.BooleanVar(value=telemetria.consentimento() is True)
+        ctk.CTkCheckBox(c, text="Enviar dados anônimos de funcionamento", variable=var_tel,
+                        command=lambda: telemetria.definir_consentimento(var_tel.get())).pack(
+            anchor="w", padx=18, pady=(4, 2))
+        texto(c, "O diagnóstico com os registros só é enviado quando você clica em \"Enviar diagnóstico ao "
+                 "suporte\".", cor=CINZA, pady=(2, 14))
 
         c = secao("Marcas")
         texto(c, "WhatsApp é marca da Meta Platforms, Inc. iPhone, iOS, iTunes e iCloud são marcas da Apple Inc. "

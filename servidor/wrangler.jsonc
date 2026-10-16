@@ -1,0 +1,19 @@
+{
+  // Servidor de registros do Migrador de WhatsApp para iPhone (conta DAGUMASI).
+  "name": "migrador-whatsapp-logs",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "account_id": "c9e9a9fc6e0a9042d30bc7c0258827b0",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "migrador-whatsapp-logs",
+      "database_id": "3e2eeefe-c2fd-4103-a862-480d5ed8e2d2",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Apaga eventos e diagnósticos com mais de 180 dias, e os contadores de limite antigos.
+  "triggers": { "crons": ["17 4 * * *"] },
+  "observability": { "enabled": true }
+}
