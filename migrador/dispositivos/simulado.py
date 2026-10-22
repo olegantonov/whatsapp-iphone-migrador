@@ -37,6 +37,7 @@ CENARIOS = {
     "queda_backup": "Cabo desconecta no meio do backup",
     "backup_corrompido": "Backup sai incompleto (arquivo faltando)",
     "ja_criptografado": "iPhone antigo já tem senha de backup (senha: 1234)",
+    "um_por_vez": "Um iPhone por vez: só o antigo até o backup, depois só o novo",
 }
 
 COMUM, BUSINESS = "net.whatsapp.WhatsApp", "net.whatsapp.WhatsAppSMB"
@@ -58,6 +59,7 @@ class BackendSimulado:
         self._quedas = 0
         self._restaurado = False
         self._consultas_destino = 0
+        self._backup_feito = False
 
     def ultimas_versoes(self) -> dict[str, str]:
         return dict(ULTIMAS_VERSOES)
@@ -88,6 +90,8 @@ class BackendSimulado:
             destino.buscar_ativo = True
         elif self.cenario == "confiar" and self._listagens == 1:
             destino = Aparelho(udid=UDID_DESTINO, erro=PRECISA_CONFIAR)
+        if self.cenario == "um_por_vez":
+            return [destino] if self._backup_feito else [origem]
         return [origem, destino]
 
     def _bundles(self) -> list[str]:
@@ -137,6 +141,7 @@ class BackendSimulado:
             progresso(i * 100 / passos)
             self._espera(0.2)
         gerar_backup_falso(pasta / udid, ios="26.6", senha=self._senha, bundles=self._bundles())
+        self._backup_feito = True
         if self.cenario == "backup_corrompido":
             _apagar_um_arquivo(pasta / udid)
 

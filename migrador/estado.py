@@ -48,6 +48,9 @@ class Estado:
     resultado: dict | None = None
     # UDID do iPhone novo aprovado na conferência da etapa "Preparar o iPhone novo".
     destino_conferido: str | None = None
+    # Conferência inicial feita só com o iPhone antigo: o novo é o único iPhone conectado, depois do
+    # backup, que não seja o antigo.
+    destino_depois: bool = False
     confirmado_em: str | None = None
     historico: list[str] = field(default_factory=list)
     # Número aleatório desta migração, para juntar os eventos anônimos de uma mesma tentativa.

@@ -701,7 +701,8 @@ class App(ctk.CTk):
 
     def _tela_conexao(self):
         self._cabecalho("Conectar e conferir",
-                        "Conecte OS DOIS iPhones ao PC pelo cabo, desbloqueie e toque em \"Confiar\" se aparecer.")
+                        "Conecte os dois iPhones ao PC pelo cabo, desbloqueie e toque em \"Confiar\" se aparecer. "
+                        "Se preferir um de cada vez, conecte agora só o iPhone antigo: o novo entra depois do backup.")
         e = self.migracao.estado
         c = self._cartao("1. Onde guardar o backup")
         linha = ctk.CTkFrame(c, fg_color="transparent")
@@ -718,6 +719,7 @@ class App(ctk.CTk):
         self.quadro_aparelhos = ctk.CTkFrame(c, fg_color="transparent")
         self.quadro_aparelhos.pack(fill="x", padx=0, pady=(0, 10))
         self.cartao_checagens = None
+        self._so_antigo = None
         # WhatsApps escolhidos para migrar e conferir; None = todos os instalados.
         self._escolhidos_ui = list(e.escolhidos) if e.escolhidos else None
         self._botao_continuar("Continuar →", lambda: self.mostrar("senha"), habilitado=False)
@@ -753,6 +755,7 @@ class App(ctk.CTk):
             return
         for w in self.quadro_aparelhos.winfo_children():
             w.destroy()
+        self._so_antigo = None
         prontos = [a for a in aparelhos if not a.erro]
         problemas = [a for a in aparelhos if a.erro]
         if not aparelhos:
@@ -770,9 +773,19 @@ class App(ctk.CTk):
         if problemas:
             self._lista_checagens(self.quadro_aparelhos,
                                   checagens.checar_conexao(problemas))
+        if len(prontos) == 1 and not problemas:
+            # Um iPhone por vez: este é o antigo; o novo é conectado e conferido depois do backup.
+            self._so_antigo = prontos[0]
+            self._texto(self.quadro_aparelhos, "Só um iPhone conectado. Se ele é o iPhone ANTIGO (o que tem o "
+                                               "WhatsApp), dá para fazer o backup agora e conectar o novo só depois, "
+                                               "sozinho. Se quiser conferir os dois juntos, conecte o novo e clique "
+                                               "em Procurar de novo.", cor=CINZA)
+            ctk.CTkButton(self.quadro_aparelhos, text="Este é o iPhone antigo: conferir", width=280,
+                          command=self._conferir).pack(anchor="w", padx=18, pady=(10, 4))
+            return
         if len(prontos) < 2:
-            self._texto(self.quadro_aparelhos, "É preciso ter os dois iPhones conectados e liberados. Depois de "
-                                               "resolver, clique em Procurar de novo.", cor=LARANJA)
+            self._texto(self.quadro_aparelhos, "Conecte e libere o iPhone antigo (e, se quiser, o novo junto). "
+                                               "Depois de resolver, clique em Procurar de novo.", cor=LARANJA)
             return
         rotulos = {a.rotulo() + f"  [{a.udid[-6:]}]": a for a in prontos}
         self._mapa_aparelhos = rotulos
@@ -799,8 +812,11 @@ class App(ctk.CTk):
         self.var_destino.set(a)
 
     def _conferir(self):
-        origem = self._mapa_aparelhos[self.var_origem.get()]
-        destino = self._mapa_aparelhos[self.var_destino.get()]
+        if self._so_antigo:
+            origem, destino = self._so_antigo, None
+        else:
+            origem = self._mapa_aparelhos[self.var_origem.get()]
+            destino = self._mapa_aparelhos[self.var_destino.get()]
         pasta = Path(self.var_pasta.get().strip())
         if not pasta.is_absolute():
             messagebox.showwarning("Pasta", "Informe o caminho completo da pasta do backup.", parent=self)
@@ -1143,10 +1159,14 @@ class App(ctk.CTk):
             "Conecte o iPhone novo a este PC pelo cabo e toque em \"Confiar\" se aparecer.",
             "Clique em \"Conferir iPhone novo\" abaixo.",
         ])
-        d = self.migracao.estado.destino
-        if d:
+        e = self.migracao.estado
+        if e.destino_depois:
+            self._texto(c, "Deixe conectado só o iPhone novo: o programa usa o único iPhone conectado que não seja "
+                           "o antigo, e confere antes o iOS, o espaço e o \"Buscar iPhone\" dele.",
+                        cor=AZUL, pady=(0, 6))
+        elif e.destino:
             self._texto(c, f"Por segurança, só o iPhone escolhido como novo na conferência pode receber o backup: "
-                           f"{Aparelho.de_dict(d).rotulo()}. Apagar o iPhone não muda essa identificação.",
+                           f"{Aparelho.de_dict(e.destino).rotulo()}. Apagar o iPhone não muda essa identificação.",
                         cor=AZUL, pady=(0, 6))
         self._texto(c, "Alternativa sem apagar: deixe o iPhone novo configurado e desligue o \"Buscar iPhone\" nele. "
                        "A restauração substitui todo o conteúdo do mesmo jeito.", cor=CINZA, pady=(0, 14))

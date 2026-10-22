@@ -96,9 +96,12 @@ def checar_conexao(aparelhos: list[Aparelho]) -> list[Checagem]:
     return c
 
 
-def checar_aparelhos(origem: Aparelho, destino: Aparelho, whatsapps: list[InfoWhatsApp],
+def checar_aparelhos(origem: Aparelho, destino: Aparelho | None, whatsapps: list[InfoWhatsApp],
                      ultimas: dict[str, str] | None, escolhidos: list[str] | None = None) -> list[Checagem]:
+    """`destino` None: conferência só com o iPhone antigo; o novo é conferido depois do backup."""
     c: list[Checagem] = []
+    if destino is None:
+        return _checar_so_antigo(origem, whatsapps, ultimas, escolhidos)
     if origem.udid == destino.udid:
         return [Checagem("Aparelhos", Status.BLOQUEIO, "O iPhone antigo e o novo são o mesmo aparelho.",
                          "Escolha aparelhos diferentes em \"iPhone antigo\" e \"iPhone novo\".")]
@@ -127,6 +130,33 @@ def checar_aparelhos(origem: Aparelho, destino: Aparelho, whatsapps: list[InfoWh
         if ap.bateria is not None and ap.bateria < BATERIA_MINIMA:
             c.append(Checagem(f"Bateria do iPhone {papel}", Status.AVISO, f"Bateria em {ap.bateria}%.",
                               "Deixe o iPhone na tomada durante todo o processo."))
+    return c
+
+
+def _checar_so_antigo(origem: Aparelho, whatsapps: list[InfoWhatsApp], ultimas: dict[str, str] | None,
+                      escolhidos: list[str] | None) -> list[Checagem]:
+    escolhidos = [w.bundle for w in whatsapps] if escolhidos is None else escolhidos
+    c = checar_whatsapps(whatsapps, escolhidos)
+    ultima_origem = (ultimas or {}).get(origem.tipo)
+    if ultimas is None:
+        c.append(Checagem("Atualizações do iOS", Status.AVISO,
+                          "Não consegui consultar a Apple para saber a versão mais recente do iOS.",
+                          f"Confira manualmente no iPhone antigo. {ATUALIZAR}"))
+    elif ultima_origem and comparar(origem.ios, ultima_origem) < 0:
+        c.append(Checagem("iOS do iPhone antigo", Status.AVISO,
+                          f"Está no iOS {origem.ios}; existe o {ultima_origem}. Não é obrigatório atualizar o antigo.",
+                          "Se quiser, atualize o antigo antes do backup."))
+    elif ultima_origem:
+        c.append(Checagem("iOS do iPhone antigo", Status.OK, f"iOS {origem.ios}, a versão mais recente."))
+    necessario = tamanho_estimado_backup(origem, whatsapps) + FOLGA_DESTINO_BYTES
+    c.append(Checagem("iPhone novo", Status.INFO,
+                      "Será conectado e conferido depois do backup, sozinho no PC. Ele vai precisar do iOS "
+                      f"{origem.ios} ou mais novo (de preferência o mais recente) e de pelo menos "
+                      f"{formatar_bytes(necessario)} de capacidade.",
+                      "Se quiser saber agora se ele serve, conecte os dois iPhones e clique em Procurar de novo."))
+    if origem.bateria is not None and origem.bateria < BATERIA_MINIMA:
+        c.append(Checagem("Bateria do iPhone antigo", Status.AVISO, f"Bateria em {origem.bateria}%.",
+                          "Deixe o iPhone na tomada durante todo o processo."))
     return c
 
 

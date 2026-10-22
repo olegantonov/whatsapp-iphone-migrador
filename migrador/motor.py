@@ -111,15 +111,16 @@ class Migracao:
         self.aparelhos = self.backend.listar()
         return self.aparelhos
 
-    def conferir(self, origem: Aparelho, destino: Aparelho, pasta: Path,
+    def conferir(self, origem: Aparelho, destino: Aparelho | None, pasta: Path,
                  escolhidos: list[str] | None = None) -> list[Checagem]:
         """`escolhidos`: WhatsApps a migrar e conferir (comum, Business ou os dois). None = todos
-        os instalados no iPhone antigo."""
+        os instalados no iPhone antigo. `destino` None: só o iPhone antigo está conectado agora; o
+        novo é conectado e conferido depois do backup."""
         c = checagens.checar_conexao(self.aparelhos)
         if tem_bloqueio(c):
             return c
         whatsapps: list[InfoWhatsApp] = []
-        if origem.udid != destino.udid:
+        if destino is None or origem.udid != destino.udid:
             whatsapps = self.backend.whatsapps(origem.udid)
         self.whatsapps_encontrados = whatsapps
         if escolhidos is None:
@@ -128,7 +129,7 @@ class Migracao:
         necessario = checagens.tamanho_estimado_backup(origem, whatsapps)
         # Um backup anterior na mesma pasta é reaproveitado (incremental) e não conta como espaço a ocupar.
         ja_ocupado = _tamanho_pasta(pasta / origem.udid)
-        pc = checagens.checar_confianca([origem, destino])
+        pc = checagens.checar_confianca([origem] + ([destino] if destino else []))
         pc += self.verificar_sistema("conexao")
         pc += checagens.checar_pc(None, pasta, disco.espaco_livre(pasta) + ja_ocupado,
                                   disco.sistema_arquivos(pasta), necessario)
@@ -145,7 +146,8 @@ class Migracao:
                      estimado_gb=_gb(necessario))
         if not tem_bloqueio(c):
             e = self.estado
-            e.origem, e.destino = origem.para_dict(), destino.para_dict()
+            e.origem, e.destino = origem.para_dict(), destino.para_dict() if destino else None
+            e.destino_depois = destino is None
             if e.relatorio and set(escolhidos) != set(e.bundles_escolhidos):
                 # A verificação anterior conferiu outros WhatsApps: não vale para a escolha nova.
                 e.relatorio = None
@@ -155,7 +157,8 @@ class Migracao:
             e.whatsapp = None
             e.pasta_backup = str(pasta)
             nomes = ", ".join(nome_whatsapp(b) for b in escolhidos)
-            e.anotar(f"Conferência aprovada: {origem.rotulo()} → {destino.rotulo()}; backup em {pasta}; "
+            novo = destino.rotulo() if destino else "iPhone novo a conectar depois do backup"
+            e.anotar(f"Conferência aprovada: {origem.rotulo()} → {novo}; backup em {pasta}; "
                      f"migrar e conferir: {nomes}")
             e.avancar_para("senha")
             self.salvar()
@@ -285,10 +288,23 @@ class Migracao:
         if not prontos:
             return None, [checagens.Checagem("iPhone novo", checagens.Status.BLOQUEIO, "Nenhum iPhone conectado.",
                                              "Conecte o iPhone novo ao PC pelo cabo e desbloqueie.")]
-        # Só o iPhone escolhido como novo na conferência inicial pode receber o backup: a restauração
-        # apaga o aparelho, então outro iPhone conectado por engano nunca é escolhido sozinho.
-        escolhido = (e.destino or {}).get("udid")
-        destino = next((a for a in prontos if a.udid == escolhido), None)
+        if e.destino_depois:
+            # Conferência inicial só com o iPhone antigo: o novo é o único conectado que não é o antigo.
+            # Com mais de um candidato, nenhum é escolhido sozinho, porque a restauração apaga o aparelho.
+            outros = [a for a in prontos if a.udid != e.origem["udid"]]
+            if len(outros) > 1:
+                c.append(checagens.Checagem(
+                    "iPhone novo", checagens.Status.BLOQUEIO,
+                    f"Há {len(outros)} iPhones conectados além do antigo, e não sei qual deles é o novo.",
+                    "Deixe conectado só o iPhone novo e clique em \"Conferir iPhone novo\" de novo."))
+                _registrar_checagens("conferência do iPhone novo", c)
+                return None, c
+            destino = outros[0] if outros else None
+        else:
+            # Só o iPhone escolhido como novo na conferência inicial pode receber o backup: a restauração
+            # apaga o aparelho, então outro iPhone conectado por engano nunca é escolhido sozinho.
+            escolhido = (e.destino or {}).get("udid")
+            destino = next((a for a in prontos if a.udid == escolhido), None)
         if destino is None:
             antigo = next((a for a in prontos if a.udid == e.origem["udid"]), None)
             if antigo and len(prontos) == 1:

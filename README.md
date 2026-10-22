@@ -7,7 +7,7 @@ Programa gratuito e de código aberto para Windows, desenvolvido pela **DAGUMASI
 ## Como funciona
 
 1. **Preparação.** O programa confere o PC sozinho: app Apple Devices (ou iTunes) instalado e o serviço da Apple respondendo, iPhones que já confiam neste PC (primeira conexão), notebook na tomada, o que acontece ao fechar a tampa e programas que disputam o iPhone (iTunes, 3uTools, iMazing…). O que não dá para detectar vira uma lista para você marcar.
-2. **Conferência.** Com os dois iPhones conectados, o programa verifica o modelo, a versão do iOS (consultando na Apple qual é a mais recente para cada modelo), o espaço no PC e no iPhone novo, se a pasta do backup está fora do OneDrive/Dropbox e aceita gravação, se o WhatsApp está no aparelho antigo e se o "Buscar iPhone" está desligado no novo. Se algo impedir a migração, ele diz exatamente o que fazer.
+2. **Conferência.** Com os dois iPhones conectados (ou só o antigo, se preferir um de cada vez), o programa verifica o modelo, a versão do iOS (consultando na Apple qual é a mais recente para cada modelo), o espaço no PC e no iPhone novo, se a pasta do backup está fora do OneDrive/Dropbox e aceita gravação, se o WhatsApp está no aparelho antigo e se o "Buscar iPhone" está desligado no novo. Se algo impedir a migração, ele diz exatamente o que fazer.
 3. **Backup.** O PC faz um backup completo e criptografado do iPhone antigo, igual ao do iTunes/Finder. O iPhone antigo não é apagado nem alterado.
 4. **Verificação.** O programa abre o backup e confere:
    - que cada arquivo listado no índice existe e tem o tamanho esperado;
@@ -35,7 +35,7 @@ Se o iPhone antigo tiver os dois, a conferência pergunta quais migrar: **os doi
 - O iPhone antigo nunca é apagado nem modificado. A única mudança é ativar a senha de backup, que é um ajuste do sistema.
 - O iPhone novo só é tocado depois que o backup foi verificado e aprovado.
 - Antes de restaurar, o programa refaz o inventário do backup: o tamanho e a data de modificação de **cada** arquivo, mais o SHA-256 dos arquivos de controle (Manifest, Status e Info.plist). Qualquer arquivo alterado, apagado ou novo bloqueia a restauração. Ele também confere que o iOS e o espaço do novo comportam o backup.
-- Só o iPhone escolhido como novo na conferência pode receber o backup. Outro iPhone conectado nunca é escolhido sozinho, nem o antigo.
+- Só o iPhone escolhido como novo na conferência pode receber o backup. Outro iPhone conectado nunca é escolhido sozinho, nem o antigo. Se a conferência foi feita só com o iPhone antigo, o novo precisa ser o único iPhone conectado na hora de restaurar.
 - O progresso fica salvo. É possível fechar o programa e retomar depois na mesma etapa, inclusive após uma atualização.
 - Todas as operações ficam registradas em arquivos de log, sem senhas.
 - O Windows não entra em suspensão durante backup e restauração.
@@ -102,6 +102,8 @@ Depois marque o que só você pode conferir: cabos de dados, iPhone novo pronto 
 
 ### 3. Conectar e conferir
 Conecte os **dois** iPhones, desbloqueie e toque em **Confiar** em cada um. Clique em **Procurar iPhones**, confira qual é o antigo e qual é o novo (o botão **⇅ Trocar** inverte) e clique em **Conferir tudo**.
+
+**Um iPhone por vez:** se preferir, conecte agora só o iPhone antigo e clique em **Este é o iPhone antigo: conferir**. O backup e a verificação usam só ele. O iPhone novo é conectado sozinho depois, na etapa **Preparar o iPhone novo**, e só então são conferidos o iOS, o espaço e o "Buscar iPhone" dele.
 
 ![Conferência](docs/telas/03b-conexao-resultado.png)
 

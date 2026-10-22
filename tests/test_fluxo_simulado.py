@@ -134,3 +134,48 @@ def test_backup_anterior_completo_so_depois_de_terminar(tmp_path):
     assert not m.backup_anterior_completo()
     m.fazer_backup(lambda p: None, threading.Event())
     assert m.backup_anterior_completo()
+
+
+def test_um_iphone_por_vez(tmp_path):
+    m = Migracao.nova(True, "um_por_vez")
+    ap = m.procurar()
+    assert len(ap) == 1
+    c = m.conferir(ap[0], None, tmp_path / "backup")
+    assert not tem_bloqueio(c)
+    assert any(x.titulo == "iPhone novo" and x.status == Status.INFO for x in c)
+    assert m.estado.destino is None and m.estado.destino_depois
+    m.criptografia_ativa()
+    m.definir_senha("SENHA-1", guardar=False)
+    m.fazer_backup(lambda p: None, threading.Event())
+    assert m.verificar(lambda p, s: None).ok
+    destino, c = m.conferir_destino()
+    assert not tem_bloqueio(c)
+    assert destino.udid != m.estado.origem["udid"] and m.estado.destino["udid"] == destino.udid
+    m.restaurar(lambda p: None)
+    assert m.estado.etapa == "concluido"
+
+
+def test_um_por_vez_recusa_o_antigo_e_mais_de_um_candidato(tmp_path):
+    from migrador.modelos import Aparelho
+    m = Migracao.nova(True, "um_por_vez")
+    ap = m.procurar()
+    m.conferir(ap[0], None, tmp_path / "backup")
+    m.criptografia_ativa()
+    m.definir_senha("SENHA-1", guardar=False)
+    m.fazer_backup(lambda p: None, threading.Event())
+    m.verificar(lambda p, s: None)
+
+    antigo = Aparelho.de_dict(m.estado.origem)
+    m.backend.listar = lambda: [antigo]
+    _, c = m.conferir_destino()
+    assert any("iPhone ANTIGO" in x.detalhe and x.status == Status.BLOQUEIO for x in c)
+
+    outro = Aparelho(udid="00008140-OUTRO", tipo="iPhone17,1", ios="27.0.1", capacidade=512 * 1024**3,
+                     livre=500 * 1024**3, bateria=90, buscar_ativo=False)
+    terceiro = Aparelho(udid="00008140-TERCEIRO", tipo="iPhone17,1", ios="27.0.1", capacidade=512 * 1024**3,
+                        livre=500 * 1024**3, bateria=90, buscar_ativo=False)
+    m.backend.listar = lambda: [antigo, outro, terceiro]
+    destino, c = m.conferir_destino()
+    assert destino is None and any("não sei qual deles é o novo" in x.detalhe for x in c)
+    with pytest.raises(ErroAparelho):
+        m.restaurar(lambda p: None)
