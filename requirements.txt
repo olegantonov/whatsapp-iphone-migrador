@@ -1,4 +1,4 @@
-pymobiledevice3==11.31.0
+pymobiledevice3==11.43.1
 pyiosbackup==0.2.4
 customtkinter==6.0.0
 packaging>=24

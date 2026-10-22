@@ -1,6 +1,7 @@
 """Orquestra a migração. A interface só chama estes métodos; cada um confere
 pré-condições e salva o progresso antes e depois de agir."""
 import logging
+import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -51,10 +52,30 @@ class Migracao:
         e = self.estado
         telemetria.registrar(tipo, etapa=e.etapa, sessao=e.sessao, simulacao=e.simulacao, **dados)
 
-    def _evento_falha(self, tipo: str, erro: BaseException, acomp: "_Acompanhamento") -> None:
+    def _evento_falha(self, tipo: str, erro: BaseException, acomp: "_Acompanhamento", **extra) -> None:
         if isinstance(erro, Cancelado):
             tipo = tipo.replace("_falha", "_cancelado")
-        self._evento(tipo, **_descrever_erro(erro), minutos=acomp.minutos(), porcentagem=acomp.ultimo)
+        self._evento(tipo, **_descrever_erro(erro), minutos=acomp.minutos(), porcentagem=acomp.ultimo, **extra)
+
+    def _espaco_na_falha(self) -> dict:
+        """Onde faltou espaço, se faltou: PC (pasta do backup) e iPhone antigo, lidos logo depois da falha."""
+        e, d = self.estado, {}
+        try:
+            d["pc_livre_gb"] = _gb(shutil.disk_usage(e.pasta_backup).free)
+            d["pasta_gb"] = _gb(_tamanho_pasta(e.pasta_aparelho))
+        except Exception:
+            log.exception("falha lendo o espaço do PC")
+        try:
+            origem = next((a for a in self.backend.listar() if a.udid == e.origem["udid"]), None)
+            if origem:
+                d["iphone_livre_gb"] = _gb(origem.livre)
+        except Exception:
+            log.exception("falha lendo o espaço do iPhone antigo")
+        atividade = getattr(self.backend, "ultima_atividade", None)
+        if atividade:
+            d["atividade"] = atividade
+        log.info("backup interrompido: %s", d)
+        return d
 
     # --- versões ----------------------------------------------------------------------
 
@@ -194,7 +215,8 @@ class Migracao:
         try:
             self.backend.fazer_backup(e.origem["udid"], Path(e.pasta_backup), acomp, cancelar, aviso)
         except BaseException as erro:
-            self._evento_falha("backup_falha", erro, acomp)
+            extra = {} if isinstance(erro, Cancelado) else self._espaco_na_falha()
+            self._evento_falha("backup_falha", erro, acomp, **extra)
             raise
         self._evento("backup_ok", incremental=incremental, minutos=acomp.minutos(),
                      pasta_gb=_gb(_tamanho_pasta(e.pasta_aparelho)))

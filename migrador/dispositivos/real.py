@@ -6,6 +6,8 @@ Precisa do serviço de dispositivos móveis da Apple instalado no Windows
 import asyncio
 import logging
 import threading
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from pymobiledevice3 import usbmux
@@ -33,7 +35,7 @@ from migrador.dispositivos.base import (
     ErroAparelho,
     Progresso,
 )
-from migrador.modelos import WHATSAPP_BUNDLES, Aparelho, InfoWhatsApp
+from migrador.modelos import WHATSAPP_BUNDLES, Aparelho, InfoWhatsApp, formatar_bytes
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +72,14 @@ def traduzir(e: BaseException) -> ErroAparelho:
         if "find my" in baixo or "findmy" in baixo or "fmip" in baixo:
             return ErroAparelho("O \"Buscar iPhone\" está ativado no iPhone novo.",
                                 "No iPhone novo: Ajustes > [seu nome] > Buscar > Buscar iPhone > desativar.")
+        if "no space left on device" in baixo or "code=28" in baixo:
+            # O PC nunca repassa ao iPhone um "sem espaço" ao gravar (isso viraria erro aqui no
+            # programa): este código 28 vem de dentro do próprio iPhone, enquanto ele prepara a cópia.
+            return ErroAparelho(
+                "O iPhone antigo avisou que ficou sem espaço enquanto preparava o backup.",
+                "Reinicie o iPhone antigo (desligar e ligar de novo) e confira em Ajustes > Geral > "
+                "Armazenamento do iPhone se há espaço livre. Depois tente de novo. Se o erro voltar, "
+                "clique em \"Enviar diagnóstico ao suporte\".")
         if "password" in baixo or "passcode" in baixo:
             return ErroAparelho("A senha do backup não foi aceita pelo iPhone.",
                                 "Confira a senha do backup e tente de novo.")
@@ -94,6 +104,8 @@ async def _conectar(udid: str, pair_timeout: float | None = 60):
 
 class BackendReal:
     simulado = False
+    # Resumo do último backup (mensagens e bytes que chegaram do iPhone), para o evento de falha.
+    ultima_atividade: dict | None = None
 
     def servico_apple_ok(self) -> bool:
         try:
@@ -234,22 +246,38 @@ class BackendReal:
             ld = await _conectar(udid)
             try:
                 async with Mobilebackup2Service(ld) as mb:
-                    _repassar_avisos(mb, aviso)
+                    atividade = _Atividade()
+                    _repassar_avisos(mb, atividade)
+                    _acompanhar_link(mb, atividade)
                     # full=False: se já houver um backup parcial/anterior na pasta, é incremental
                     # e aproveita o que já foi copiado.
                     tarefa = asyncio.create_task(
                         mb.backup(full=False, backup_directory=pasta, progress_callback=progresso)
                     )
-                    while not tarefa.done():
-                        if cancelar.is_set():
-                            tarefa.cancel()
-                            try:
-                                await tarefa
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                            raise Cancelado()
-                        await asyncio.sleep(0.3)
-                    tarefa.result()
+                    texto, proximo_registro = None, time.monotonic() + REGISTRO_BACKUP
+                    try:
+                        while not tarefa.done():
+                            if cancelar.is_set():
+                                tarefa.cancel()
+                                try:
+                                    await tarefa
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                raise Cancelado()
+                            if aviso and atividade.texto() != texto:
+                                texto = atividade.texto()
+                                try:
+                                    aviso(texto)
+                                except Exception:
+                                    log.exception("falha ao mostrar aviso")
+                            if time.monotonic() >= proximo_registro:
+                                proximo_registro += REGISTRO_BACKUP
+                                atividade.registrar()
+                            await asyncio.sleep(0.3)
+                        tarefa.result()
+                    finally:
+                        atividade.registrar()
+                        BackendReal.ultima_atividade = atividade.resumo()
             finally:
                 await ld.close()
         pasta.mkdir(parents=True, exist_ok=True)
@@ -287,9 +315,67 @@ AVISOS_BACKUP = {
     "com.apple.LocalAuthentication.ui.dismissed": "",
     "com.apple.itunes-client.syncCancelRequest": "O backup foi cancelado no próprio iPhone.",
 }
+# De quanto em quanto tempo o log anota se o iPhone está mandando dados (segundos).
+REGISTRO_BACKUP = 120
+# Sem nenhuma mensagem do iPhone por este tempo, a tela pede para conferir o aparelho (segundos).
+SILENCIO_LONGO = 10 * 60
 
 
-def _repassar_avisos(mb: Mobilebackup2Service, aviso: Aviso | None) -> None:
+class _Atividade:
+    """O que o iPhone já mandou durante o backup. Antes do primeiro arquivo ele passa um tempo
+    preparando os dados sem mandar porcentagem nenhuma: a tela fica em 0% e, sem isto, não dá
+    para saber (nem na tela nem no log) se a conexão está viva ou parada."""
+
+    def __init__(self):
+        self.inicio = self.ultima = time.monotonic()
+        self.comando = None
+        self.mensagens = 0
+        self.bytes = 0
+        self.aviso_iphone = ""
+        self._vistos: set[str] = set()
+
+    def mensagem(self, comando) -> None:
+        self.ultima = time.monotonic()
+        self.mensagens += 1
+        self.comando = comando
+        if comando not in self._vistos:
+            self._vistos.add(comando)
+            log.info("backup: primeira mensagem %s do iPhone após %.0f s", comando, self.ultima - self.inicio)
+
+    def recebido(self, n: int) -> None:
+        self.ultima = time.monotonic()
+        self.bytes += n
+
+    def notificacao(self, nome) -> None:
+        self.ultima = time.monotonic()
+        if nome in AVISOS_BACKUP:
+            self.aviso_iphone = AVISOS_BACKUP[nome]
+
+    def texto(self) -> str:
+        if self.aviso_iphone:
+            return self.aviso_iphone
+        silencio = time.monotonic() - self.ultima
+        if silencio >= SILENCIO_LONGO:
+            return (f"O iPhone antigo não manda nada há {silencio // 60:.0f} minutos. Confira se ele continua "
+                    "conectado e desbloqueie a tela para ver se apareceu algum pedido.")
+        if not self.bytes:
+            return ("O iPhone antigo está preparando o backup. Antes de enviar o primeiro arquivo ele organiza "
+                    "os dados, e isso pode levar vários minutos com a porcentagem parada em 0%.")
+        return f"Copiando o conteúdo do iPhone antigo… {formatar_bytes(self.bytes)} recebidos."
+
+    def resumo(self) -> dict:
+        agora = time.monotonic()
+        return {"mensagens": self.mensagens, "ultimo_comando": self.comando, "bytes": self.bytes,
+                "silencio_s": round(agora - self.ultima), "comandos": sorted(self._vistos, key=str)}
+
+    def registrar(self) -> None:
+        agora = time.monotonic()
+        log.info("backup: %.0f min, %d mensagens do iPhone, última (%s) há %.0f s, %s recebidos",
+                 (agora - self.inicio) / 60, self.mensagens, self.comando, agora - self.ultima,
+                 formatar_bytes(self.bytes))
+
+
+def _repassar_avisos(mb: Mobilebackup2Service, atividade: _Atividade) -> None:
     """O pymobiledevice3 só registra estes avisos no log; aqui eles também vão para a tela."""
     original = getattr(mb, "_log_backup_notification", None)
     if original is None:
@@ -300,13 +386,42 @@ def _repassar_avisos(mb: Mobilebackup2Service, aviso: Aviso | None) -> None:
         original(evento)
         nome = evento.get("Name") if isinstance(evento, dict) else None
         log.info("aviso do iPhone durante o backup: %s", nome)
-        if aviso and nome in AVISOS_BACKUP:
-            try:
-                aviso(AVISOS_BACKUP[nome])
-            except Exception:
-                log.exception("falha ao mostrar aviso")
+        atividade.notificacao(nome)
 
     mb._log_backup_notification = repassar
+
+
+def _acompanhar_link(mb: Mobilebackup2Service, atividade: _Atividade) -> None:
+    """Conta as mensagens e os bytes que chegam pelo canal do backup. O pymobiledevice3 só chama o
+    progresso quando o iPhone já está transferindo arquivos."""
+    original = getattr(mb, "device_link", None)
+    if original is None:
+        log.warning("esta versão do pymobiledevice3 não expõe o canal do backup")
+        return
+
+    @asynccontextmanager
+    async def device_link(*args, **kwargs):
+        async with original(*args, **kwargs) as dl:
+            receber, ler = getattr(dl, "receive_message", None), getattr(dl, "_recvall", None)
+            if receber is None or ler is None:
+                log.warning("esta versão do pymobiledevice3 não expõe as mensagens do backup")
+                yield dl
+                return
+
+            async def receive_message():
+                mensagem = await receber()
+                atividade.mensagem(mensagem[0] if mensagem else None)
+                return mensagem
+
+            async def _recvall(tamanho):
+                dados = await ler(tamanho)
+                atividade.recebido(len(dados))
+                return dados
+
+            dl.receive_message, dl._recvall = receive_message, _recvall
+            yield dl
+
+    mb.device_link = device_link
 
 
 async def _valor(ld, dominio: str, chave: str | None = None):
