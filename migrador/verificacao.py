@@ -166,6 +166,40 @@ def backup_completo_existe(pasta: Path | None) -> bool:
         return False
 
 
+def backup_pode_continuar(pasta: Path | None) -> bool:
+    """Uma cópia que não terminou, mas deixou na pasta o índice (Manifest.plist, Manifest.db e
+    Status.plist). Com eles o pymobiledevice3 pede ao iPhone um backup incremental, e o iPhone
+    aproveita o que já está no PC. Sem eles, a próxima tentativa recomeça do zero."""
+    if not pasta or backup_completo_existe(pasta):
+        return False
+    try:
+        return all((pasta / nome).stat().st_size > 0 for nome in ("Manifest.plist", "Manifest.db", "Status.plist"))
+    except OSError:
+        return False
+
+
+def situacao_da_pasta(pasta: Path | None) -> dict:
+    """O que já existe na pasta antes de um backup, para saber pelos registros se o iPhone pôde
+    continuar a cópia anterior: sem Manifest.plist, Manifest.db e Status.plist o pymobiledevice3
+    pede um backup completo. Nada é apagado; os arquivos já copiados continuam na pasta."""
+    if not pasta or not pasta.exists():
+        return {"existe": False}
+    d = {"existe": True}
+    for nome in ("Manifest.plist", "Manifest.db", "Status.plist", "Info.plist"):
+        try:
+            d[nome] = (pasta / nome).stat().st_size
+        except OSError:
+            d[nome] = None
+    try:
+        status = plistlib.loads((pasta / "Status.plist").read_bytes())
+        d["snapshot"] = status.get("SnapshotState")
+        d["backup_state"] = status.get("BackupState")
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        pass
+    d["snapshot_pendente"] = (pasta / "Snapshot").is_dir()
+    return d
+
+
 def ler_manifesto(pasta: Path) -> dict:
     return plistlib.loads((pasta / "Manifest.plist").read_bytes())
 

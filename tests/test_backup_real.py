@@ -112,3 +112,39 @@ def test_erro_28_do_iphone_vira_orientacao_em_portugues():
     erro = real.traduzir(bruto)
     assert "sem espaço" in erro.mensagem and "Reinicie o iPhone antigo" in erro.como_resolver
     assert "Device link" not in erro.como_resolver
+
+
+def test_etapa_final_explica_que_nao_travou():
+    atividade = real._Atividade()
+    atividade.recebido(218 * 1024**3)
+    atividade.mensagem("DLMessageMoveItems")
+    assert "Etapa final" not in atividade.texto()
+    atividade.ultimo_byte -= real.SEM_BYTES_FINAL + 1
+    texto = atividade.texto()
+    assert "Etapa final" in texto and "Não desconecte o cabo" in texto
+    atividade.mensagem("DLMessageUploadFiles")
+    assert "Etapa final" not in atividade.texto()
+
+
+def test_listagem_rapida_responde_igual_ao_pymobiledevice3(tmp_path):
+    from pathlib import Path
+    from pymobiledevice3.services.device_link import DeviceLink
+
+    (tmp_path / "ab").mkdir()
+    (tmp_path / "ab" / "arquivo").write_bytes(b"x" * 123)
+    (tmp_path / "ab" / "sub").mkdir()
+    respostas = []
+
+    class Falso:
+        root_path = Path(tmp_path).resolve()
+
+        async def status_response(self, codigo, status_str="", status_dict=None):
+            respostas.append((codigo, status_dict))
+
+    falso = Falso()
+    mensagem = ["DLContentsOfDirectory", "ab"]
+    asyncio.run(real._listar_pasta_rapido(falso)(mensagem))
+    asyncio.run(DeviceLink.contents_of_directory(falso, mensagem))
+    assert respostas[0] == respostas[1]
+    assert respostas[0][1]["arquivo"]["DLFileSize"] == 123
+    assert respostas[0][1]["sub"]["DLFileType"] == "DLFileTypeDirectory"

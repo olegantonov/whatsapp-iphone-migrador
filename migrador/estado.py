@@ -42,6 +42,9 @@ class Estado:
     criptografia_ja_ativa: bool = False
     senha_protegida: str | None = None
     backup_concluido_em: str | None = None
+    # Maior volume que já chegou do iPhone antigo numa tentativa de backup. É o tamanho real: o espaço
+    # livre que o iPhone informa já veio muito acima do verdadeiro (iOS 27).
+    backup_recebido: int = 0
     relatorio: dict | None = None
     restaurado_em: str | None = None
     # Conferência do WhatsApp no iPhone novo depois da restauração.

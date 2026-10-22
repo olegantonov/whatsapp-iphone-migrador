@@ -121,7 +121,9 @@ O iPhone novo precisa estar na **versão mais recente do iOS** disponível para 
 ![Senha](docs/telas/04-senha.png)
 
 ### 5. Backup do iPhone antigo
-Clique em **Iniciar backup**. A tela mostra a porcentagem, o tempo decorrido e o tempo restante. Não use nem desconecte o iPhone e não deixe o PC desligar: se a **primeira** cópia for interrompida, ela recomeça do zero. Se já existir um backup completo, o botão vira **Atualizar backup** e só copia o que mudou.
+Clique em **Iniciar backup**. A tela mostra a porcentagem, o tempo decorrido e o tempo restante. Não use nem desconecte o iPhone e não deixe o PC desligar: se a **primeira** cópia for interrompida, ela recomeça do zero. Se já existir um backup completo, o botão vira **Atualizar backup** e só copia o que mudou. Se uma cópia parou depois de deixar o índice na pasta (por exemplo, já na etapa final), o botão vira **Continuar o backup**: nada é apagado e o iPhone aproveita o que já está no PC.
+
+Na **etapa final** o iPhone organiza os arquivos no PC (move, apaga e lista pastas). Num backup de 200 GB isso leva horas, com a porcentagem parada ou em 100%: a tela avisa "Etapa final". Não desconecte o cabo até aparecer **Backup concluído**.
 
 ### 6. Verificar o backup
 Acontece automaticamente. O programa mostra quantas conversas, mensagens e mídias do WhatsApp estão no backup. Se algo estiver errado, ele reprova e oferece refazer o backup.
@@ -169,7 +171,8 @@ Também dá para abrir direto no modo simulação: `MigradorWhatsApp.exe --simul
 | "iOS do iPhone novo" em vermelho | *Ajustes > Geral > Atualização de Software* no iPhone novo. |
 | "Buscar iPhone" em vermelho | No iPhone novo: *Ajustes > [seu nome] > Buscar > Buscar iPhone > desativar*. Ou apague-o e pare na tela de configuração. |
 | Falta espaço no PC | Escolha uma pasta em outro disco (NTFS), como um HD externo. |
-| Backup parou | Na primeira cópia, clique em **Recomeçar o backup**; ela começa do zero. Se já havia um backup completo, clique em **Atualizar backup**, que só copia o que mudou. |
+| Backup parou | Na primeira cópia, clique em **Recomeçar o backup**; ela começa do zero. Se o botão mostrar **Continuar o backup**, a cópia anterior deixou o índice na pasta e o iPhone aproveita o que já chegou. Se já havia um backup completo, clique em **Atualizar backup**, que só copia o que mudou. |
+| Backup em 100% (ou parado) por muito tempo | É a etapa final: o iPhone está organizando os arquivos no PC e, em backups grandes, isso leva horas. Não desconecte o cabo até aparecer **Backup concluído**. |
 
 Os registros ficam em `%LOCALAPPDATA%\MigradorWhatsApp\logs` (botão **Abrir registros** no programa): um arquivo por vez que o programa é aberto, mais `atualizacao.log` para as atualizações automáticas. Senhas nunca são gravadas nos registros. Ao final da migração, **Salvar relatório** gera um resumo em texto.
 

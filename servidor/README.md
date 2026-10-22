@@ -38,7 +38,7 @@ Para seguir uma migração do começo ao fim, filtre por `sessao`. Para ver toda
 | `sistema` | Verificação do PC (preparação, conexão, backup, restauração) |
 | `conferencia`, `conferencia_destino` | Conferência dos aparelhos e do iPhone novo, com pendências |
 | `senha_ok`, `senha_falha` | Senha do backup |
-| `backup_inicio`, `backup_ok`, `backup_falha`, `backup_cancelado` | Backup, com duração e % atingida |
+| `backup_inicio`, `backup_ok`, `backup_falha`, `backup_cancelado` | Backup, com duração e % atingida; o início traz o que já havia na pasta (`pasta`: índice, `snapshot`) |
 | `verificacao`, `verificacao_falha` | Resultado da verificação (contagens, anexos, amostra) |
 | `restauracao_inicio`, `restauracao_ok`, `restauracao_falha` | Restauração |
 | `resultado`, `resultado_confirmado` | WhatsApp no iPhone novo e a confirmação da pessoa |

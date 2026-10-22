@@ -5,9 +5,11 @@ Precisa do serviço de dispositivos móveis da Apple instalado no Windows
 """
 import asyncio
 import logging
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pymobiledevice3 import usbmux
@@ -147,6 +149,9 @@ class BackendReal:
             ap.ios = v.get("ProductVersion", "")
             disco = await _valor(ld, "com.apple.disk_usage")
             if isinstance(disco, dict):
+                # Registro completo: no iOS 27 o "TotalDataAvailable" já veio muito acima do real.
+                log.info("armazenamento de %s: %s", udid,
+                         {k: v for k, v in disco.items() if isinstance(v, (int, float, bool))})
                 ap.capacidade = disco.get("TotalDataCapacity")
                 ap.livre = disco.get("TotalDataAvailable")
             ap.bateria = await _valor(ld, "com.apple.mobile.battery", "BatteryCurrentCapacity")
@@ -319,6 +324,12 @@ AVISOS_BACKUP = {
 REGISTRO_BACKUP = 120
 # Sem nenhuma mensagem do iPhone por este tempo, a tela pede para conferir o aparelho (segundos).
 SILENCIO_LONGO = 10 * 60
+# Depois de receber os arquivos o iPhone organiza a pasta no PC (mover, apagar, listar). Num backup
+# de 200 GB isso levou mais de 3 horas, com a porcentagem parada e nenhum byte novo chegando.
+COMANDOS_FINAIS = {"DLMessageMoveItems", "DLMessageMoveFiles", "DLMessageRemoveItems", "DLMessageRemoveFiles",
+                   "DLContentsOfDirectory", "DLMessageCopyItem"}
+# Sem bytes novos por este tempo e com um comando final, a tela explica a etapa final (segundos).
+SEM_BYTES_FINAL = 60
 
 
 class _Atividade:
@@ -327,7 +338,7 @@ class _Atividade:
     para saber (nem na tela nem no log) se a conexão está viva ou parada."""
 
     def __init__(self):
-        self.inicio = self.ultima = time.monotonic()
+        self.inicio = self.ultima = self.ultimo_byte = time.monotonic()
         self.comando = None
         self.mensagens = 0
         self.bytes = 0
@@ -343,7 +354,7 @@ class _Atividade:
             log.info("backup: primeira mensagem %s do iPhone após %.0f s", comando, self.ultima - self.inicio)
 
     def recebido(self, n: int) -> None:
-        self.ultima = time.monotonic()
+        self.ultima = self.ultimo_byte = time.monotonic()
         self.bytes += n
 
     def notificacao(self, nome) -> None:
@@ -358,10 +369,18 @@ class _Atividade:
         if silencio >= SILENCIO_LONGO:
             return (f"O iPhone antigo não manda nada há {silencio // 60:.0f} minutos. Confira se ele continua "
                     "conectado e desbloqueie a tela para ver se apareceu algum pedido.")
+        if self.finalizando():
+            return (f"Etapa final: os {formatar_bytes(self.bytes)} já chegaram e agora o iPhone antigo organiza "
+                    "os arquivos no PC. Em backups grandes isso leva horas, mesmo com a porcentagem parada ou "
+                    "em 100%. Não desconecte o cabo nem feche o programa até aparecer \"Backup concluído\".")
         if not self.bytes:
             return ("O iPhone antigo está preparando o backup. Antes de enviar o primeiro arquivo ele organiza "
                     "os dados, e isso pode levar vários minutos com a porcentagem parada em 0%.")
         return f"Copiando o conteúdo do iPhone antigo… {formatar_bytes(self.bytes)} recebidos."
+
+    def finalizando(self) -> bool:
+        return (bool(self.bytes) and self.comando in COMANDOS_FINAIS
+                and time.monotonic() - self.ultimo_byte >= SEM_BYTES_FINAL)
 
     def resumo(self) -> dict:
         agora = time.monotonic()
@@ -419,9 +438,36 @@ def _acompanhar_link(mb: Mobilebackup2Service, atividade: _Atividade) -> None:
                 return dados
 
             dl.receive_message, dl._recvall = receive_message, _recvall
+            handlers = getattr(dl, "_dl_handlers", None)
+            if isinstance(handlers, dict) and "DLContentsOfDirectory" in handlers:
+                handlers["DLContentsOfDirectory"] = _listar_pasta_rapido(dl)
+            else:
+                log.warning("esta versão do pymobiledevice3 não expõe a listagem de pastas do backup")
             yield dl
 
     mb.device_link = device_link
+
+
+def _listar_pasta_rapido(dl):
+    """Mesma resposta do pymobiledevice3 para DLContentsOfDirectory, com os.scandir. O original
+    consulta cada arquivo quatro vezes; no Windows o scandir já traz tipo, tamanho e data, e numa
+    pasta de backup com milhares de arquivos cada listagem levava ~25 s, enquanto o iPhone espera
+    a resposta para continuar a etapa final."""
+    from pymobiledevice3.safe_paths import resolve_device_path
+
+    async def contents_of_directory(message) -> None:
+        dados = {}
+        with os.scandir(resolve_device_path(dl.root_path, message[1])) as entradas:
+            for ent in entradas:
+                st = ent.stat()
+                tipo = ("DLFileTypeDirectory" if ent.is_dir() else
+                        "DLFileTypeRegular" if ent.is_file() else "DLFileTypeUnknown")
+                # O plistlib espera datas UTC sem fuso.
+                data = datetime.fromtimestamp(st.st_mtime, timezone.utc).replace(tzinfo=None)
+                dados[ent.name] = {"DLFileType": tipo, "DLFileSize": st.st_size, "DLFileModificationDate": data}
+        await dl.status_response(0, status_dict=dados)
+
+    return contents_of_directory
 
 
 async def _valor(ld, dominio: str, chave: str | None = None):

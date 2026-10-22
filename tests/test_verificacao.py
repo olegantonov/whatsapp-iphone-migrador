@@ -97,3 +97,30 @@ def test_backup_completo_existe(tmp_path):
     # primeira cópia interrompida: o pymobiledevice3 deixa o Manifest.plist vazio
     (pasta / "Manifest.plist").write_bytes(b"")
     assert not backup_completo_existe(pasta)
+
+
+def test_situacao_da_pasta_mostra_se_da_para_continuar(tmp_path):
+    import plistlib
+    from migrador.verificacao import situacao_da_pasta
+
+    assert situacao_da_pasta(tmp_path / "nada") == {"existe": False}
+    (tmp_path / "Manifest.db").write_bytes(b"x" * 10)
+    (tmp_path / "Status.plist").write_bytes(plistlib.dumps({"SnapshotState": "moving", "BackupState": "new"}))
+    (tmp_path / "Snapshot").mkdir()
+    d = situacao_da_pasta(tmp_path)
+    assert d["Manifest.db"] == 10 and d["Manifest.plist"] is None
+    assert d["snapshot"] == "moving" and d["snapshot_pendente"] is True
+
+
+def test_backup_pode_continuar_so_com_o_indice_na_pasta(tmp_path):
+    import plistlib
+    from migrador.verificacao import backup_pode_continuar
+
+    assert not backup_pode_continuar(tmp_path)
+    (tmp_path / "Manifest.plist").write_bytes(b"x")
+    (tmp_path / "Manifest.db").write_bytes(b"x")
+    (tmp_path / "Status.plist").write_bytes(plistlib.dumps({"SnapshotState": "moving"}))
+    assert backup_pode_continuar(tmp_path)
+    # Terminado não é "continuar": é atualizar.
+    (tmp_path / "Status.plist").write_bytes(plistlib.dumps({"SnapshotState": "finished"}))
+    assert not backup_pode_continuar(tmp_path)

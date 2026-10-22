@@ -48,6 +48,11 @@ ICONES = {
 }
 LARGURA_TEXTO = 640
 INTERVALO_ATUALIZACAO_MS = 6 * 3600 * 1000
+# Cópia anterior que não terminou, mas deixou o índice na pasta (ver verificacao.backup_pode_continuar).
+CONTINUAR_BACKUP = ("A cópia anterior não terminou, mas o que já chegou continua na pasta: o programa não apaga "
+                    "nada. Ao continuar, o iPhone antigo confere o que já está no PC e aproveita o que puder; só "
+                    "se ele recusar o que está lá a cópia recomeça do zero. Não use o iPhone antigo, não "
+                    "desconecte o cabo e não deixe o PC desligar até aparecer \"Backup concluído\".")
 
 
 def _milhar(n: int) -> str:
@@ -950,11 +955,14 @@ class App(ctk.CTk):
                         "alterado.")
         tamanho = sum((w.get("tamanho") or 0) for w in (e.whatsapps or ([e.whatsapp] if e.whatsapp else [])))
         origem = Aparelho.de_dict(e.origem) if e.origem else None
-        estimado = max(x for x in (tamanho or 0, (origem.usado if origem else 0) or 0))
+        estimado = max(tamanho or 0, (origem.usado if origem else 0) or 0, e.backup_recebido)
         anterior = self.migracao.backup_anterior_completo()
+        continuar = not anterior and self.migracao.backup_pode_continuar()
         if anterior:
             sobre_interromper = ("Já existe um backup completo nesta pasta: uma nova cópia só atualiza o que mudou. "
                                  "Se ela for interrompida, basta atualizar de novo.")
+        elif continuar:
+            sobre_interromper = CONTINUAR_BACKUP
         else:
             sobre_interromper = ("Não use o iPhone antigo, não desconecte o cabo e não deixe o PC desligar. Se esta "
                                  "primeira cópia for interrompida (cabo, energia ou botão Parar), ela RECOMEÇA DO "
@@ -973,7 +981,8 @@ class App(ctk.CTk):
         self.painel = self._painel_progresso(c, "Pronto para começar.")
         linha = ctk.CTkFrame(c, fg_color="transparent")
         linha.pack(anchor="w", padx=18, pady=(0, 14))
-        texto = "↻  Atualizar backup (copia só o que mudou)" if anterior else "▶  Iniciar backup"
+        texto = ("↻  Atualizar backup (copia só o que mudou)" if anterior
+                 else "▶  Continuar o backup" if continuar else "▶  Iniciar backup")
         self.btn_backup = ctk.CTkButton(linha, text=texto, width=240, height=40, command=self._iniciar_backup)
         self.btn_backup.pack(side="left")
         self.btn_cancelar = ctk.CTkButton(linha, text="Parar backup", width=160, fg_color="transparent",
@@ -1032,11 +1041,14 @@ class App(ctk.CTk):
         self._alvo_progresso = None
         if self.tela_atual == "backup":
             anterior = self.migracao.backup_anterior_completo()
+            continuar = not anterior and self.migracao.backup_pode_continuar()
             self.btn_backup.configure(state="normal", text="↻  Atualizar backup (copia só o que mudou)" if anterior
+                                      else "↻  Continuar o backup" if continuar
                                       else "↻  Recomeçar o backup (do zero)")
             self.btn_cancelar.configure(state="disabled")
             parou = "Backup interrompido." if isinstance(erro, Cancelado) else "O backup parou antes de terminar."
             complemento = ("O backup completo anterior continua na pasta." if anterior
+                           else CONTINUAR_BACKUP if continuar
                            else "Esta primeira cópia não terminou; a próxima tentativa começa do zero.")
             self.painel["msg"].configure(text=f"{parou} {complemento}")
         if not isinstance(erro, Cancelado):

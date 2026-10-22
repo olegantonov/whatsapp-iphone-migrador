@@ -1,6 +1,7 @@
 """Orquestra a migração. A interface só chama estes métodos; cada um confere
 pré-condições e salva o progresso antes e depois de agir."""
 import logging
+import os
 import shutil
 import threading
 import time
@@ -16,12 +17,15 @@ from migrador.modelos import (
 )
 from migrador.config import pasta_dados
 from migrador.verificacao import (
-    SenhaIncorreta, backup_completo_existe, conferir_antes_de_restaurar, verificar_backup,
+    SenhaIncorreta, backup_completo_existe, backup_pode_continuar, conferir_antes_de_restaurar, situacao_da_pasta,
+    verificar_backup,
 )
 
 log = logging.getLogger(__name__)
 
 GB = 1024**3
+# Medir a pasta do backup só para os registros não pode segurar a tela por mais que isto (segundos).
+LIMITE_MEDICAO_S = 15
 
 
 class Migracao:
@@ -62,7 +66,7 @@ class Migracao:
         e, d = self.estado, {}
         try:
             d["pc_livre_gb"] = _gb(shutil.disk_usage(e.pasta_backup).free)
-            d["pasta_gb"] = _gb(_tamanho_pasta(e.pasta_aparelho))
+            d["pasta_gb"] = _gb(_tamanho_pasta(e.pasta_aparelho, limite_s=LIMITE_MEDICAO_S))
         except Exception:
             log.exception("falha lendo o espaço do PC")
         try:
@@ -126,9 +130,11 @@ class Migracao:
         if escolhidos is None:
             escolhidos = [w.bundle for w in whatsapps]
         c += checagens.checar_aparelhos(origem, destino, whatsapps, self.ultimas_versoes(), escolhidos)
-        necessario = checagens.tamanho_estimado_backup(origem, whatsapps)
         # Um backup anterior na mesma pasta é reaproveitado (incremental) e não conta como espaço a ocupar.
-        ja_ocupado = _tamanho_pasta(pasta / origem.udid)
+        ja_ocupado = _tamanho_pasta(pasta / origem.udid) or 0
+        # O espaço livre que o iPhone informa pode estar muito acima do real (visto no iOS 27: 19 GB
+        # "usados" para um backup de 218 GB); o que já está na pasta é um piso mais confiável.
+        necessario = max(checagens.tamanho_estimado_backup(origem, whatsapps), ja_ocupado)
         pc = checagens.checar_confianca([origem] + ([destino] if destino else []))
         pc += self.verificar_sistema("conexao")
         pc += checagens.checar_pc(None, pasta, disco.espaco_livre(pasta) + ja_ocupado,
@@ -200,6 +206,15 @@ class Migracao:
     def backup_anterior_completo(self) -> bool:
         return backup_completo_existe(self.estado.pasta_aparelho)
 
+    def backup_pode_continuar(self) -> bool:
+        return backup_pode_continuar(self.estado.pasta_aparelho)
+
+    def _anotar_recebido(self) -> None:
+        recebido = (getattr(self.backend, "ultima_atividade", None) or {}).get("bytes") or 0
+        if recebido > self.estado.backup_recebido:
+            self.estado.backup_recebido = recebido
+            self.salvar()
+
     def fazer_backup(self, progresso: Callable[[float], None], cancelar: threading.Event,
                      aviso: Aviso | None = None) -> None:
         e = self.estado
@@ -213,16 +228,20 @@ class Migracao:
         e.relatorio = None
         self.salvar()
         incremental = self.backup_anterior_completo()
-        self._evento("backup_inicio", incremental=incremental)
+        pasta_atual = situacao_da_pasta(e.pasta_aparelho)
+        log.info("backup: pasta antes de começar: %s", pasta_atual)
+        self._evento("backup_inicio", incremental=incremental, pasta=pasta_atual)
         acomp = _Acompanhamento(progresso, "backup")
         try:
             self.backend.fazer_backup(e.origem["udid"], Path(e.pasta_backup), acomp, cancelar, aviso)
         except BaseException as erro:
+            self._anotar_recebido()
             extra = {} if isinstance(erro, Cancelado) else self._espaco_na_falha()
             self._evento_falha("backup_falha", erro, acomp, **extra)
             raise
+        self._anotar_recebido()
         self._evento("backup_ok", incremental=incremental, minutos=acomp.minutos(),
-                     pasta_gb=_gb(_tamanho_pasta(e.pasta_aparelho)))
+                     pasta_gb=_gb(_tamanho_pasta(e.pasta_aparelho, limite_s=LIMITE_MEDICAO_S)))
         e.backup_concluido_em = datetime.now().isoformat(timespec="seconds")
         e.anotar("Backup concluído")
         e.avancar_para("verificacao")
@@ -497,14 +516,29 @@ def _descrever_erro(erro: BaseException) -> dict:
     return d
 
 
-def _tamanho_pasta(pasta: Path) -> int:
-    if not pasta.exists():
+def _tamanho_pasta(pasta: Path | None, limite_s: float | None = None) -> int | None:
+    """Soma os arquivos da pasta. Usa os.scandir porque no Windows o tamanho vem junto da listagem,
+    sem consultar arquivo por arquivo. Um backup de 200 GB tem centenas de milhares de arquivos:
+    com `limite_s`, desiste e devolve None se passar do tempo, para a tela não ficar parada."""
+    if not pasta or not pasta.exists():
         return 0
-    total = 0
-    for arq in pasta.rglob("*"):
+    fim = time.monotonic() + limite_s if limite_s is not None else None
+    total, pendentes = 0, [str(pasta)]
+    while pendentes:
         try:
-            if arq.is_file():
-                total += arq.stat().st_size
+            with os.scandir(pendentes.pop()) as entradas:
+                for ent in entradas:
+                    try:
+                        if ent.is_dir(follow_symlinks=False):
+                            pendentes.append(ent.path)
+                        elif ent.is_file(follow_symlinks=False):
+                            total += ent.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
         except OSError:
             pass
+        if fim is not None and time.monotonic() > fim:
+            log.info("medição da pasta do backup interrompida após %.0f s (%s até ali)",
+                     limite_s, _gb(total))
+            return None
     return total
